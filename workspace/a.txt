@@ -1,0 +1,2 @@
+Hello, Mini Harness!
+This is a test file.
