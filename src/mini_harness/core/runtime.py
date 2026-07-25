@@ -40,27 +40,6 @@ def _estimate_tokens(text: str) -> int:
     # 降级方案：保守估算（中英文混合约 1 token ≈ 2.5 字符，这里取 3 更保守）
     return len(text) // 3
 
-# # ---------- 工具注册表接口 ----------
-# class ToolRegistry:
-#     """工具注册表：管理所有可被Agent调用的工具"""
-    
-#     def register(
-#             self, 
-#             name: str, 
-#             func: Callable[..., Awaitable[Any]], 
-#             description: str, 
-#             parameters: Dict) -> None:
-#         """注册一个异步工具函数"""
-#         pass
-    
-#     def get_tool(self, name: str) -> Optional[Dict]:
-#         """根据名称获取工具元信息（函数引用+参数schema）"""
-#         pass
-    
-#     async def execute(self, name: str, **kwargs) -> Any:
-#         """异步执行一个工具，必须支持超时和并发"""
-#         pass
-
 # ---------- LLM 客户端接口 ----------
 class LLMClient:
     """封装大模型调用（支持流式/非流式）"""
@@ -314,7 +293,7 @@ class HarnessRuntime:
                     args = tc.get("arguments", {})
                     # 使用配置的超时时间
                     task = asyncio.wait_for(
-                        self.tools.execute(name, **args), 
+                        self.tools.execute_with_retry(name, **args), 
                         timeout=self.config.tool_timeout
                     )
 
@@ -337,10 +316,32 @@ class HarnessRuntime:
                 for idx, tc in enumerate(tool_calls):
                     result = results[idx]
                     if isinstance(result, Exception):
-                        result_str = f"Error: {str(result)}"
-                        self._record_event(EventType.ERROR, f"Tool {tc['name']} failed: {result}")
+                        # ---- 修复点：区分异常类型，记录更详细的上下文 ----
+                        error_type = type(result).__name__
+                        if isinstance(result, asyncio.TimeoutError):
+                            error_msg = f"Timeout after {self.config.tool_timeout}s"
+                        else:
+                            error_msg = str(result)
+
+
+                        result_str = f"{error_type}: {error_msg}"
+                        self._record_event(
+                            EventType.ERROR, 
+                            {
+                                "tool_name": tc["name"],
+                                "args": tc.get("arguments", {}),  # 记录参数！方便复现
+                                "error_type": error_type,
+                                "error_msg": error_msg,
+                                "iteration": self.state.current_iteration   
+                            }
+                        )
                     else:
                         result_str = str(result)
+                        self._record_event(
+                            EventType.TOOL_CALL_RESULT,
+                            {"name": tc["name"], "result": result_str}
+                        )
+
                     self.state.messages.append({
                         "role": "tool",
                         "tool_call_id": tc.get("id", f"call_{idx}"),
