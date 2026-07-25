@@ -1,53 +1,32 @@
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import asyncio
-from mini_harness.core.runtime import HarnessRuntime, ToolRegistry, LLMClient
+from mini_harness.core.runtime import HarnessRuntime, LLMClient
+from mini_harness.infra.tools import  ToolRegistry, SandboxExecutor  
 from mini_harness.infra.config import RuntimeConfig
 from mini_harness.core.models import Event, EventType
+from tests.mocks import MockLLMClient  # ← 只导入 MockLLMClient
 
-# ---------- Mock 实现 ----------
-class MockLLMClient(LLMClient):
-    def __init__(self, mode="final"):
-        self.mode = mode  # "final", "tool", "multi"
+# class MockToolRegistry(ToolRegistry):
+#     def __init__(self):
+#         self._tools = {}
 
-    async def generate(self, messages, tools=None):
-        await asyncio.sleep(0.1)
-        if self.mode == "final":
-            return {"content": "The answer is 42.", "tool_calls": []}
-        elif self.mode == "tool":
-            return {
-                "content": None,
-                "tool_calls": [
-                    {"name": "add", "arguments": {"a": 1, "b": 2}, "id": "call_1"}
-                ]
-            }
-        elif self.mode == "multi":
-            return {
-                "content": None,
-                "tool_calls": [
-                    {"name": "add", "arguments": {"a": 1, "b": 2}, "id": "call_1"},
-                    {"name": "multiply", "arguments": {"a": 3, "b": 4}, "id": "call_2"}
-                ]
-            }
-        else:
-            return {"content": "Unknown", "tool_calls": []}
+#     def register(self, name, func, description, parameters):
+#         self._tools[name] = {"func": func, "desc": description, "params": parameters}
 
-class MockToolRegistry(ToolRegistry):
-    def __init__(self):
-        self._tools = {}
+#     def get_tool(self, name):
+#         return self._tools.get(name)
 
-    def register(self, name, func, description, parameters):
-        self._tools[name] = {"func": func, "desc": description, "params": parameters}
-
-    def get_tool(self, name):
-        return self._tools.get(name)
-
-    async def execute(self, name, **kwargs):
-        await asyncio.sleep(1.0)  # 模拟耗时
-        if name == "add":
-            return kwargs.get("a", 0) + kwargs.get("b", 0)
-        elif name == "multiply":
-            return kwargs.get("a", 0) * kwargs.get("b", 0)
-        else:
-            return f"Executed {name} with {kwargs}"
+#     async def execute(self, name, **kwargs):
+#         await asyncio.sleep(1.0)  # 模拟耗时
+#         if name == "add":
+#             return kwargs.get("a", 0) + kwargs.get("b", 0)
+#         elif name == "multiply":
+#             return kwargs.get("a", 0) * kwargs.get("b", 0)
+#         else:
+#             return f"Executed {name} with {kwargs}"
 
 # ---------- 测试函数 ----------
 async def run_test(
@@ -63,16 +42,28 @@ async def run_test(
         max_context_tokens = 50
     )
 
-    registry = MockToolRegistry()
+    # ========== 修复点：创建真实的 SandboxExecutor ==========
+    sandbox = SandboxExecutor()  # 真实沙箱
+    registry = ToolRegistry(sandbox=sandbox) # 传入 sandbox
+
+    # 注册测试工具（注意：这里的 func 要传入实际可执行的异步函数）
+    # 由于是测试，我们可以用简单的 lambda 或直接传递 None（但真实执行会报错）
+    # 对于 mock 模式，建议使用真实的工具函数（如 add/multiply 的实现）
+    async def add_func(a, b):
+        return a + b
+    
+    async def multiply_func(a, b):
+        return a * b
+    
     registry.register(
         "add", 
-        None, 
+        add_func,  # ← 需要传真实的异步函数
         "Add two numbers", 
         {"a": "int", "b": "int"}
     )
     registry.register(
         "multiply", 
-        None, 
+        multiply_func,  # ← 同上
         "Multiply two numbers", 
         {"a": "int", "b": "int"}
     )
@@ -110,5 +101,44 @@ async def main():
         "Direct text response"
     )
 
+    # ========== 新增：独立测试函数 ==========
+async def test_runtime_final():
+    """
+    冒烟测试： 测试基础链路
+    LLM 直接返回最终答案（不请求调用任何工具）时，Runtime 
+    能否正确地结束循环并把答案交出来
+    """
+    print("\n" + "=" * 50)
+    print("独立测试：Runtime 返回最终答案")
+    print("=" * 50)
+
+    llm = MockLLMClient(mode="final")
+    registry = ToolRegistry()  # 真实 Registry，但不用注册工具，因为 LLM 不会调用工具
+    config = RuntimeConfig(max_iterations=3)
+
+    runtime = HarnessRuntime(
+        config=config,
+        llm_client=llm,
+        tool_registry=registry
+    )
+
+    result = await runtime.run("What is the answer?")
+    
+    print(f"Final answer: {result['final_answer']}")
+    print(f"Iterations: {result['iterations']}")
+    print(f"Status: {result['status']}")
+    print("Events:")
+    for ev in result['events']:
+        print(f"  {ev.type.value}: {ev.data}")
+    
+    # 断言验证
+    assert result["final_answer"] == "The answer is 42."
+    print("\n✅ 测试通过！")
+
+# ========== 入口 ==========
 if __name__ == "__main__":
+    # 如果你只想跑冒烟测试，取消下面一行的注释，注释掉 main()
+    # asyncio.run(test_runtime_final())
+    
+    # 默认跑全量测试
     asyncio.run(main())

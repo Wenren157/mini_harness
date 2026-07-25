@@ -39,7 +39,7 @@ class SandboxExecutor:
         """
         执行 Shell 命令。
         返回: {"stdout": str, "stderr": str, "return_code": int, "execution_time": float}
-        约束: 使用 asyncio.create_subprocess_shell + asyncio.wait_for 实现超时。
+        约束: 使用 asyncio.create_subprocess_shell + asyncio.wait_for 实现超时,超时或命令返回非0时，抛出异常
         """
         start = time.perf_counter()
         proc = await asyncio.create_subprocess_shell(
@@ -50,24 +50,43 @@ class SandboxExecutor:
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            returncode = proc.returncode
-            timed_out = False
+            # returncode = proc.returncode
+            # timed_out = False
         except asyncio.TimeoutError:
             # 超时：强制终止进程，并读取剩余输出
             proc.kill()
-            stdout, stderr = await proc.communicate()  # 等待进程结束
-            returncode = proc.returncode
-            timed_out = True
+            # if proc.stdout:
+            #     proc.stdout.close()
+            # if proc.stderr:
+            #     proc.stderr.close()
+            await proc.wait()  # 修复：等待进程结束，防止僵尸
+            # ===== 核心修复：显式抛出异常，而不是返回 timed_out=True =====
+            raise TimeoutError(f"命令 '{command}' 执行超时（限制 {timeout}s）")
+            # stdout, stderr = await proc.communicate()  # 等待进程结束
+            # returncode = proc.returncode
+            # timed_out = True
 
-        # 根据操作系统选择正确的编码，避免中文乱码
+        # 解码输出：根据操作系统选择正确的编码，避免中文乱码
         encoding = 'gbk' if sys.platform == 'win32' else 'utf-8'
-        execution_time = time.perf_counter() - start
+        stdout_text = stdout.decode(encoding, errors='replace')
+        stderr_text = stderr.decode(encoding, errors='replace')
+
+        # ===== 额外加固：如果命令返回非0，也视为异常 =====
+        if proc.returncode != 0:
+            raise RuntimeError(f"命令 '{command}' 执行失败 \
+                               (code {proc.returncode}): {stderr_text}")
+    
+        # execution_time = time.perf_counter() - start
         return {
-            "stdout": stdout.decode(encoding, errors='replace'),
-            "stderr": stderr.decode(encoding, errors='replace'),
-            "return_code": returncode,
-            "execution_time": execution_time,
-            "timed_out": timed_out,
+            # "stdout": stdout.decode(encoding, errors='replace'),
+            # "stderr": stderr.decode(encoding, errors='replace'),
+            # "return_code": returncode,
+            # "execution_time": execution_time,
+            # "timed_out": timed_out,
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+            "return_code": proc.returncode,
+            "execution_time": time.perf_counter() - start,
         }
         
     

@@ -120,16 +120,15 @@ async def demo():
     try:
         # Windows 用 timeout /t 60，Linux 用 sleep 60
         cmd = "ping -n 60 127.0.0.1 > nul" if sys.platform == "win32" else "sleep 60"
-        result = await registry.execute_with_retry(
+        await registry.execute_with_retry(
             "execute_command", 
             command=cmd,
             timeout=3.0  # 确保这里传入了 timeout
         )
-         # 注意：execute_with_retry 不会抛出 TimeoutError，而是返回结果字典带 timed_out=True
-        if result.get('timed_out'):
-            print("✅ 超时生效！timed_out=True")
-        else:
-            print(f"⚠️ 命令提前结束？return_code={result['return_code']}, stdout={result['stdout'][:50]}")
+        print("⚠️ 命令意外完成（预期超时）")
+        # 注意：execute_with_retry 不会抛出 TimeoutError，而是返回结果字典带 timed_out=True
+    except TimeoutError:
+        print("✅ 超时生效！")
     except Exception as e:
         print(f"❌ 执行异常: {e}")
         if e.__cause__:  # 👈 新增
