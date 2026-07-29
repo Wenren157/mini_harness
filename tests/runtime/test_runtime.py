@@ -9,24 +9,6 @@ from mini_harness.infra.config import RuntimeConfig
 from mini_harness.core.models import Event, EventType
 from tests.mocks import MockLLMClient  # ← 只导入 MockLLMClient
 
-# class MockToolRegistry(ToolRegistry):
-#     def __init__(self):
-#         self._tools = {}
-
-#     def register(self, name, func, description, parameters):
-#         self._tools[name] = {"func": func, "desc": description, "params": parameters}
-
-#     def get_tool(self, name):
-#         return self._tools.get(name)
-
-#     async def execute(self, name, **kwargs):
-#         await asyncio.sleep(1.0)  # 模拟耗时
-#         if name == "add":
-#             return kwargs.get("a", 0) + kwargs.get("b", 0)
-#         elif name == "multiply":
-#             return kwargs.get("a", 0) * kwargs.get("b", 0)
-#         else:
-#             return f"Executed {name} with {kwargs}"
 
 # ---------- 测试函数 ----------
 async def run_test(
@@ -101,7 +83,7 @@ async def main():
         "Direct text response"
     )
 
-    # ========== 新增：独立测试函数 ==========
+# ========== 新增：独立测试函数 ==========
 async def test_runtime_final():
     """
     冒烟测试： 测试基础链路

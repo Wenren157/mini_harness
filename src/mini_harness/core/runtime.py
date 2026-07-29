@@ -85,7 +85,8 @@ class HarnessRuntime:
         self.event_bus.append(
             Event(
                 type=event_type, 
-                data=data, trace_id=self._trace_id
+                data=data, 
+                trace_id=self._trace_id
             )
         )
     # =======================LRU策略用于淘汰最老的轮次=====================================
