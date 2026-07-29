@@ -173,7 +173,7 @@ class ToolRegistry:
     """
     管理所有可用工具。
     职责：注册、获取、执行（带重试机制）。
-    底软强化点：执行必须支持“指数退避重试”（Retry with Exponential Backoff）。
+    强化点：执行必须支持“指数退避重试”（Retry with Exponential Backoff）。
     """
     
     def __init__(self, sandbox: SandboxExecutor):
