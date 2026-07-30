@@ -9,37 +9,6 @@ import random
 import json
 import tiktoken
 
-_tokenizer_cache = None
-
-def _get_tokenizer():
-    """懒加载并缓存 tokenizer，避免每次调用都重新初始化（性能优化）"""
-    global _tokenizer_cache
-    if _tokenizer_cache is None: # 只在第一次调用时初始化
-        try:
-            # DeepSeek / GPT-4 使用 cl100k_base 编码，与 Open AI 兼容
-            _tokenizer_cache = tiktoken.get_encoding("cl100k_base")
-        except Exception as e:
-            # 兜底：如果加载失败，返回 None，后续降级为 len//3
-            print(f"Warning: Failed to load tiktoken: {e}")
-            _tokenizer_cache = False  # 标记为失败，避免重复尝试
-
-    return _tokenizer_cache if _tokenizer_cache is not False else None
-
-# ==========================第三项修补：token精分器=================================
-def _estimate_tokens(text: str) -> int:
-    """
-    估算文本的 Token 数量。
-    优先使用 tiktoken 精确计数，降级方案为 len(text) // 3。
-    """
-    tokenizer = _get_tokenizer()
-    if tokenizer is not None:
-        try:
-            return len(tokenizer.encode(text))
-        except Exception:
-            # 编码失败时降级
-            pass
-    # 降级方案：保守估算（中英文混合约 1 token ≈ 2.5 字符，这里取 3 更保守）
-    return len(text) // 3
 
 # ---------- LLM 客户端接口 ----------
 class LLMClient:
@@ -107,92 +76,7 @@ class HarnessRuntime:
                 trace_id=self._trace_id
             )
         )
-    # =======================LRU策略用于淘汰最老的轮次=====================================
-    def _truncate_context(self) -> None:
-        """
-        滑动窗口裁剪：当上下文超过阈值时，优先删除最老的中间轮次。
-        策略：永远保留 System Prompt（如果存在） 和 最近2轮对话。
-        """
-        max_tokens = self.config.max_context_tokens   # 从配置中读取
-        # 1. 先将 messages 序列化为字符串（这一步逃不掉，因为后面精算也要用）
-        total_text = json.dumps(self.state.messages, ensure_ascii=False)
-
-
-        # ======================== 新增：懒加载性能提升  ===========================
-            # （核心）BPE 分词的基本原理：绝大多数正常文本（英文、中文、代码）的字符数 >= Token 数。
-            # 英文：1 Token ≈ 4 字符；中文：1 Token ≈ 1.5~2 字符。
-            # 因此，如果 len(text) <= max_tokens，那么 Token 数 100% <= max_tokens。
-            # 此时直接返回，完全无需加载 tiktoken
-        if len(total_text) <= max_tokens:
-            return  
-        
-        # 2. 只有通过粗筛（文本确实较长），才加载 tiktoken 做精确计算
-        estimated_tokens = _estimate_tokens(total_text)
-        
-        if estimated_tokens <= max_tokens:
-            return  # 安全范围内，不动
-        
-        # 2. 触发裁剪（类似于OS的页面置换）
-        self._record_event(
-            EventType.WARNING, 
-            f"Context overload ({estimated_tokens} tokens), triggering sliding window truncation."
-        )
-        
-        # ===== 构建保护集合 =====
-        protected_indices = set()
-
-        # 1.保护系统指令（若第一条是system）
-        if self.state.messages and self.state.messages[0].get("role") == "system":
-            protected_indices.add(0)  # 保留系统提示词
-            
-        # 2.保护用户原始输入：第一条 role == "user" 的消息）
-        for idx, msg in enumerate(self.state.messages):
-            if msg.get("role") == "user":
-                protected_indices.add(idx)
-                break   # 只保护第一条 user 消息
-        
-        # 3.保留最后2条消息（确保当前轮次不丢）
-        last_two_start = max(0, len(self.state.messages) - 2)
-        for i in range(last_two_start, len(self.state.messages)):
-            protected_indices.add(i)
-        # ===== 安全删除循环（带熔断保护） =====
-        max_attempts = 100  # 防止无限循环
-        attempts = 0
-        
-        # 只要超标，就从保护范围外删除最旧的一条
-        while estimated_tokens > max_tokens and attempts < max_attempts:
-            attempts += 1
-            deleted_any = False
-
-            # 找第一个可以删除的索引（不在保护集合内）
-            for idx, msg in enumerate(self.state.messages):
-                if idx not in protected_indices:
-                    # 如果只剩保护消息，强制退出
-                    # if len(self.state.messages) <= len(protected_indices):
-                    #     break
-                    # 删除该消息（注意pop后索引会变，所以break后重新循环）
-                    removed = self.state.messages.pop(idx)
-                    self._record_event(EventType.WARNING, 
-                                       f"Dropped old context: {str(removed)[:50]}..."
-                    )
-                    deleted_any = True
-                    # 更新估算
-                    total_text = json.dumps(self.state.messages, ensure_ascii=False)
-                    estimated_tokens = _estimate_tokens(total_text)
-                    break  # 跳出for，重新while检测
-
-            # 如果遍历完所有消息都没有可删除的，强制退出
-            if not deleted_any:
-                self._record_event(EventType.WARNING, 
-                                   "No deletable messages found, forcing exit."
-                )
-                break
-        
-         # 如果超过尝试次数，强制退出
-        if attempts >= max_attempts:
-            self._record_event(EventType.ERROR, 
-                               "Truncation exceeded max attempts, giving up."
-            )
+   
     
     async def run(self, user_query: str) -> Dict[str, Any]:
         """
@@ -214,7 +98,7 @@ class HarnessRuntime:
         """
         self._trace_id = str(uuid.uuid4())
         self.state = AgentState(max_iterations=self.config.max_iterations)
-        self.state.messages.append({"role": "user", "content": user_query})
+        self.context.add_user_message(user_query)
         self._record_event(EventType.USER_INPUT, user_query)
 
         while self.state.current_iteration < self.config.max_iterations:
@@ -247,18 +131,18 @@ class HarnessRuntime:
         返回True表示循环继续，False表示结束或出错。
         内部通过 self.state 维护当前状态。
         """
-        # ===== 第二项修补：执行上下文裁剪（防止显存泄漏） =====
-        self._truncate_context()  # 已将max_tokens=4000设为config参数
 
         try:
             self.state.status = AgentStatus.THINKING
             self._record_event(EventType.AGENT_THINKING, "Calling LLM...")
 
+            messages = self.context.get_context_for_llm()
+
             self._record_event(
                 EventType.LLM_REQUEST, 
-                {"messages": self.state.messages}
+                {"messages": messages}
             )
-            response = await self.llm.generate(self.state.messages)
+            response = await self.llm.generate(messages)
             self._record_event(EventType.LLM_RESPONSE, response)
 
             content = response.get("content")
@@ -364,20 +248,26 @@ class HarnessRuntime:
                             {"name": tc["name"], "result": result_str}
                         )
 
-                    self.state.messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.get("id", f"call_{idx}"),
-                        "content": result_str
-                    })
-                    self._record_event(EventType.TOOL_CALL_RESULT, {"name": tc["name"], "result": result_str})
-
+                    self._record_event(
+                        EventType.TOOL_CALL_RESULT, 
+                        {
+                            "name": tc["name"], 
+                            "result": result_str
+                        }
+                    )
+                    # 然后添加到 ContextManager（注意不需要 tool_call_id，ContextManager 只存储 role 和 content）
+                    self.context.add_tool_result(tc["name"], result_str)
+                    # TODO:
+                    #         ContextManager.add_tool_result()
+                    #         需要支持 tool_call_id
+                    #         否则真实Function Calling兼容性不足
                 self.state.pending_tool_calls = []
                 return True
 
             else:
                 if content is not None:
                     self.state.final_answer = content
-                    self.state.messages.append({"role": "assistant", "content": content})
+                    self.context.add_assistant_message(content)
                 else:
                     self.state.error_info = "LLM returned empty response without tool calls."
                     self._record_event(EventType.ERROR, self.state.error_info)

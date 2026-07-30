@@ -1,5 +1,6 @@
 import sys
 import os
+import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import asyncio
@@ -84,6 +85,7 @@ async def main():
     )
 
 # ========== 新增：独立测试函数 ==========
+@pytest.mark.asyncio
 async def test_runtime_final():
     """
     冒烟测试： 测试基础链路
@@ -95,7 +97,13 @@ async def test_runtime_final():
     print("=" * 50)
 
     llm = MockLLMClient(mode="final")
-    registry = ToolRegistry()  # 真实 Registry，但不用注册工具，因为 LLM 不会调用工具
+
+    sandbox = SandboxExecutor()
+    # 真实 Registry，但不用注册工具，因为 LLM 不会调用工具
+    registry = ToolRegistry(
+        sandbox=sandbox
+    )        
+               
     config = RuntimeConfig(max_iterations=3)
 
     runtime = HarnessRuntime(
