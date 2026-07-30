@@ -2,6 +2,7 @@ from typing import List, Dict, Optional, Callable, Awaitable, Any
 from mini_harness.core.models import Event, EventType, AgentState, AgentStatus
 from mini_harness.infra.tools import ToolRegistry
 from mini_harness.infra.config import RuntimeConfig
+from mini_harness.infra.context import ContextManager
 import asyncio
 import uuid
 import random
@@ -70,12 +71,29 @@ class HarnessRuntime:
             config: RuntimeConfig,
             llm_client: LLMClient, 
             tool_registry: ToolRegistry, 
+            context_manager: Optional[ContextManager] = None,   # 新增
             ):
         self.config = config
         self.llm = llm_client
         self.tools = tool_registry
         self.event_bus: List[Event] = []        # 全量事件记录
         self.state: Optional[AgentState] = None
+
+        # ---------- 集成 ContextManager ----------
+        # 从 RuntimeConfig 获取 Context token 上限
+        max_tokens = config.max_context_tokens
+
+        if context_manager is None:
+            self.context = ContextManager(
+                llm_client=llm_client,
+                max_tokens=max_tokens,
+                event_bus=self.event_bus
+            )
+        else:
+            self.context = context_manager
+            # 若外部传入的 context_manager 尚未持有 event_bus，则注入
+            if not hasattr(self.context, 'event_bus') or self.context.event_bus is None:
+                self.context.event_bus = self.event_bus
 
     def _record_event(
             self, 
@@ -236,7 +254,10 @@ class HarnessRuntime:
             self.state.status = AgentStatus.THINKING
             self._record_event(EventType.AGENT_THINKING, "Calling LLM...")
 
-            self._record_event(EventType.LLM_REQUEST, {"messages": self.state.messages})
+            self._record_event(
+                EventType.LLM_REQUEST, 
+                {"messages": self.state.messages}
+            )
             response = await self.llm.generate(self.state.messages)
             self._record_event(EventType.LLM_RESPONSE, response)
 

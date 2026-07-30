@@ -92,8 +92,15 @@ class ContextManager:
     2. 滑动窗口裁剪（同步，立即生效）
     3. 异步后台压缩（调用 LLM 总结历史，不阻塞主循环）
     """
-    def __init__(self, llm_client, max_tokens: int = 8000):
+    def __init__(
+            self, 
+            llm_client, 
+            max_tokens: int = 8000,
+            event_bus=None
+        ):
+
         self.llm = llm_client
+        self.event_bus = event_bus   # 新增：保存 EventBus 引用
         self.window = ContextWindow(max_tokens=max_tokens)
         self.summary: Optional[str] = None
         self._compression_lock = asyncio.Lock()
