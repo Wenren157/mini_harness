@@ -3,24 +3,51 @@ from typing import List, Dict, Optional, Any
 import asyncio
 import time
 import re
+import tiktoken
 
 # ============================================================
 # 1. Token 估算器
 # ============================================================
 class TokenEstimator:
-    """粗略估算 Token 数量，用于触发压缩阈值"""
-    def estimate(text: str) -> int:
-        """
-        估算文本的 Token 数。
-        中文/日文/韩文等 CJK 字符：约 1 字符 = 1 token
-        英文/数字/符号：约 4 字符 = 1 token
-        """
-        if not text:
-            return 0
-        # 统计 CJK 字符（Unicode 范围）
-        cjk_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u30ff')
-        other_chars = len(text) - cjk_chars
-        return cjk_chars + (other_chars // 4) + 1
+    """
+    Token估算器
+    优先使用tiktoken精确计算
+    """
+    _tokenizer_cache = None
+
+    @classmethod
+    def _get_tokenizer(cls):
+        """懒加载并缓存 tokenizer，避免每次调用都重新初始化（性能优化）"""
+        if cls._tokenizer_cache is None:
+            try:
+                cls._tokenizer_cache = (
+                    tiktoken.get_encoding(
+                        "cl100k_base"
+                    )
+                )
+            except Exception:
+                cls._tokenizer_cache = False
+        
+        return (
+            cls._tokenizer_cache
+            if cls._tokenizer_cache is not False
+            else None
+        )
+
+    @classmethod
+    def estimate(cls, text: str) -> int:
+
+        tokenizer = cls._get_tokenizer()
+
+        if tokenizer:
+            try:
+                return len(
+                    tokenizer.encode(text)
+                )
+            except Exception:
+                pass
+        # fallback
+        return len(text)//3
     
 # ============================================================
 # 2. 上下文窗口
@@ -151,62 +178,63 @@ class ContextManager:
                 return
             self._compression_triggered = True
 
-             # TODO: 接入 event_bus 记录压缩开始事件（含当前消息数、token 数）
-
-            # 1. 获取需要压缩的消息（排除 system）
-            messages_to_summarize = [
-                m for m in self.window.messages
-                if m["role"] != "system"
-            ]
-            if len(messages_to_summarize) <= 3:
-                self._compression_triggered = False
-                return
-            
-            # 2. 取最近 5 条非 system 消息进行总结
-            recent_5 = messages_to_summarize[-5:]
-            summary_prompt = "请用一段话（不超过50字）总结以下对话的核心内容："
-            # 构造 LLM 输入
-            summary_messages = [
-                {"role": "system", "content": summary_prompt},
-                {"role": "user", "content": str(recent_5)}   # 简单拼接
-            ]
-
             try:
-                # TODO: 接入 event_bus 记录 LLM 请求（REQUEST 事件）
-                response = await self.llm.generate(summary_messages)
-                # TODO: 接入 event_bus 记录 LLM 响应成功（SUCCESS 事件）
-                summary = response.get("content", "对话摘要生成失败")
-            except Exception as e:
-                # TODO: 接入 event_bus 记录异常（ERROR 事件）
-                summary = f"[压缩失败: {e}]"
+                # TODO: 接入 event_bus 记录压缩开始事件（含当前消息数、token 数）
 
-            # 3. 更新 summary（保留最近一次）
-            self.summary = summary
+                # 1. 获取需要压缩的消息（排除 system）
+                messages_to_summarize = [
+                    m for m in self.window.messages
+                    if m["role"] != "system"
+                ]
+                if len(messages_to_summarize) <= 3:
+                    return
+                
+                # 2. 取最近 5 条非 system 消息进行总结
+                recent_5 = messages_to_summarize[-5:]
+                summary_prompt = "请用一段话（不超过50字）总结以下对话的核心内容："
+                # 构造 LLM 输入
+                summary_messages = [
+                    {"role": "system", "content": summary_prompt},
+                    {"role": "user", "content": str(recent_5)}   # 简单拼接
+                ]
 
-            # 4. 裁剪消息：只保留 system + 最近 3 条非 system
-            system_msgs = [m for m in self.window.messages if m["role"] == "system"]
-            non_system = [m for m in self.window.messages if m["role"] != "system"]
-            kept = non_system[-3:]  # 保留最近 3 条
+                try:
+                    # TODO: 接入 event_bus 记录 LLM 请求（REQUEST 事件）
+                    response = await self.llm.generate(summary_messages)
+                    # TODO: 接入 event_bus 记录 LLM 响应成功（SUCCESS 事件）
+                    summary = response.get("content", "对话摘要生成失败")
+                except Exception as e:
+                    # TODO: 接入 event_bus 记录异常（ERROR 事件）
+                    summary = f"[压缩失败: {e}]"
 
-            # 5. 重建窗口：system + summary + 最近消息
-            new_messages = system_msgs.copy()
-            if self.summary:
-                new_messages.append({"role": "system", "content": f"[历史摘要] {self.summary}"})
-            new_messages.extend(kept)
+                # 3. 更新 summary（保留最近一次）
+                self.summary = summary
 
-            # 6. 重新计算 token
-            self.window.messages = new_messages
-            self.window.total_tokens = sum(
-                TokenEstimator.estimate(m["content"]) for m in new_messages
-            )
+                # 4. 裁剪消息：只保留 system + 最近 3 条非 system
+                system_msgs = [m for m in self.window.messages if m["role"] == "system"]
+                non_system = [m for m in self.window.messages if m["role"] != "system"]
+                kept = non_system[-3:]  # 保留最近 3 条
 
-            self._compression_triggered = False
-            # TODO: 接入 event_bus 记录压缩完成事件（含新 token 数、压缩后消息数）
+                # 5. 重建窗口：system + summary + 最近消息
+                new_messages = system_msgs.copy()
+                if self.summary:
+                    new_messages.append({"role": "system", "content": f"[历史摘要] {self.summary}"})
+                new_messages.extend(kept)
 
-        def get_context_for_llm(self) -> List[Dict[str, str]]:
-            """获取最终发给 LLM 的消息列表（包含 summary + 最近消息）"""
-            # 同步裁剪（如果超限）
-            return self.window.get_messages_for_llm()
+                # 6. 重新计算 token
+                self.window.messages = new_messages
+                self.window.total_tokens = sum(
+                    TokenEstimator.estimate(m["content"]) for m in new_messages
+                )
+
+                # TODO: 接入 event_bus 记录压缩完成事件（含新 token 数、压缩后消息数）
+            finally:
+                self._compression_triggered = False
+
+    def get_context_for_llm(self) -> List[Dict[str, str]]:
+        """获取最终发给 LLM 的消息列表（包含 summary + 最近消息）"""
+        # 同步裁剪（如果超限）
+        return self.window.get_messages_for_llm()
     
 # ============================================================
 # 4. Prompt Builder
