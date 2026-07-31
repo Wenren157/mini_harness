@@ -1,0 +1,99 @@
+[
+  {
+    "type": "llm_request",
+    "timestamp": 1785467370.7056801,
+    "data": {
+      "action": "compress_start",
+      "msg_count": 13,
+      "total_tokens": 980
+    },
+    "trace_id": ""
+  },
+  {
+    "type": "llm_request",
+    "timestamp": 1785467370.7056801,
+    "data": {
+      "action": "llm_summarize"
+    },
+    "trace_id": ""
+  },
+  {
+    "type": "success",
+    "timestamp": 1785467370.7056801,
+    "data": {
+      "action": "llm_summarize",
+      "summary": "Mock response"
+    },
+    "trace_id": ""
+  },
+  {
+    "type": "success",
+    "timestamp": 1785467370.7056801,
+    "data": {
+      "action": "compress_done",
+      "new_tokens": 175
+    },
+    "trace_id": ""
+  },
+  {
+    "type": "user_input",
+    "timestamp": 1785467370.7056801,
+    "data": "Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens ",
+    "trace_id": "7033fd78-01bf-478d-a124-a07cdb4a4330"
+  },
+  {
+    "type": "loop_iteration",
+    "timestamp": 1785467370.7056801,
+    "data": 1,
+    "trace_id": "7033fd78-01bf-478d-a124-a07cdb4a4330"
+  },
+  {
+    "type": "agent_thinking",
+    "timestamp": 1785467370.7056801,
+    "data": "Calling LLM...",
+    "trace_id": "7033fd78-01bf-478d-a124-a07cdb4a4330"
+  },
+  {
+    "type": "llm_request",
+    "timestamp": 1785467370.7056801,
+    "data": {
+      "messages": [
+        {
+          "role": "system",
+          "content": "[历史摘要] Mock response"
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens Message 6 with content to fill tokens "
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens Message 7 with content to fill tokens "
+        }
+      ]
+    },
+    "trace_id": "7033fd78-01bf-478d-a124-a07cdb4a4330"
+  },
+  {
+    "type": "llm_response",
+    "timestamp": 1785467370.7056801,
+    "data": {
+      "content": "Mock response"
+    },
+    "trace_id": "7033fd78-01bf-478d-a124-a07cdb4a4330"
+  },
+  {
+    "type": "finish",
+    "timestamp": 1785467370.7056801,
+    "data": "Mock response",
+    "trace_id": "7033fd78-01bf-478d-a124-a07cdb4a4330"
+  }
+]

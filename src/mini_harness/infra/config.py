@@ -10,3 +10,4 @@ class RuntimeConfig:
     max_iterations: int = 10
     enable_concurrent_tools: bool = True    # 是否开启并发工具调用
     max_context_tokens: int = 8000          # <--- 新增这一行
+    event_bus_maxlen: int = 10000           # 新增

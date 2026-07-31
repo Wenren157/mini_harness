@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from mini_harness.core.models import Event, EventType
 from typing import List, Dict, Optional, Any
 import asyncio
 import time
@@ -172,6 +173,14 @@ class ContextManager:
         2. 使用 asyncio.Lock 防止并发压缩。
         3. 压缩完成后插入 summary，裁剪旧消息。
         """
+        print(
+            "DEBUG event_bus:",
+            self.event_bus
+        )
+
+        print(
+            "DEBUG compress background START"
+        )
         async with self._compression_lock:
             # 防止短时间内多次触发
             if self._compression_triggered:
@@ -179,7 +188,18 @@ class ContextManager:
             self._compression_triggered = True
 
             try:
-                # TODO: 接入 event_bus 记录压缩开始事件（含当前消息数、token 数）
+                # ---- 1. 压缩开始 ----
+                if self.event_bus is not None:
+                    self.event_bus.append(
+                        Event(
+                            type=EventType.LLM_REQUEST,
+                            data={
+                                "action": "compress_start",
+                                "msg_count": len(self.window.messages),
+                                "total_tokens": self.window.total_tokens
+                            }
+                        )
+                    )
 
                 # 1. 获取需要压缩的消息（排除 system）
                 messages_to_summarize = [
@@ -199,12 +219,38 @@ class ContextManager:
                 ]
 
                 try:
-                    # TODO: 接入 event_bus 记录 LLM 请求（REQUEST 事件）
+                    # ---- 2. LLM 请求 ----
+                    if self.event_bus is not None:
+                        self.event_bus.append(
+                            Event(
+                                type=EventType.LLM_REQUEST,
+                                data={"action": "llm_summarize"}
+                            )
+                        )
                     response = await self.llm.generate(summary_messages)
-                    # TODO: 接入 event_bus 记录 LLM 响应成功（SUCCESS 事件）
+
+                    # ---- 3. LLM 成功 ----
+                    if self.event_bus is not None:
+                        self.event_bus.append(
+                            Event(
+                                type=EventType.SUCCESS,
+                                data={
+                                    "action": "llm_summarize",
+                                    "summary": response.get("content", "")
+                                }
+                            )
+                        )
+
                     summary = response.get("content", "对话摘要生成失败")
                 except Exception as e:
-                    # TODO: 接入 event_bus 记录异常（ERROR 事件）
+                    # ---- 4. 压缩失败 ----
+                    if self.event_bus is not None:
+                        self.event_bus.append(
+                            Event(
+                                type=EventType.ERROR,
+                                data={"action": "compress", "exception": str(e)}
+                            )
+                        )
                     summary = f"[压缩失败: {e}]"
 
                 # 3. 更新 summary（保留最近一次）
@@ -227,7 +273,14 @@ class ContextManager:
                     TokenEstimator.estimate(m["content"]) for m in new_messages
                 )
 
-                # TODO: 接入 event_bus 记录压缩完成事件（含新 token 数、压缩后消息数）
+                # 压缩完成（可选再记录一次 SUCCESS）
+                if self.event_bus is not None:
+                    self.event_bus.append(
+                        Event(
+                            type=EventType.SUCCESS,
+                            data={"action": "compress_done", "new_tokens": self.window.total_tokens}
+                        )
+                    )
             finally:
                 self._compression_triggered = False
 

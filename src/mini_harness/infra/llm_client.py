@@ -1,13 +1,14 @@
 import os
 from typing import List, Dict, Any, Optional
 import openai
+from mini_harness.core.interfaces import LLMClient
 
-class BaseLLMClient:
-    """LLM 客户端抽象基类"""
-    async def generate(self, messages: List[Dict[str, str]]) -> Dict[str, str]:
-        raise NotImplementedError
+# class BaseLLMClient:
+#     """LLM 客户端抽象基类"""
+#     async def generate(self, messages: List[Dict[str, str]]) -> Dict[str, str]:
+#         raise NotImplementedError
     
-class OpenAILLMClient(BaseLLMClient):
+class OpenAILLMClient(LLMClient):
     """OpenAI 兼容 API 客户端（支持 DeepSeek 等）"""
     def __init__(
         self,
