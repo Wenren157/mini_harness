@@ -36,7 +36,7 @@ class AgentStatus(Enum):
 @dataclass
 class AgentState:
     status: AgentStatus = AgentStatus.IDLE
-    messages: List[Dict[str, str]] = field(default_factory=list)  # [{"role": "user/assistant/tool", "content": "..."}]
+    # messages: List[Dict[str, str]] = field(default_factory=list)  # [{"role": "user/assistant/tool", "content": "..."}]
     current_iteration: int = 0
     max_iterations: int = 10
     pending_tool_calls: List[Dict] = field(default_factory=list)  # 待执行的工具列表

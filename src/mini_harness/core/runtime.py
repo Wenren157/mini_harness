@@ -13,24 +13,6 @@ import tiktoken
 import os, json, time
 
 
-# ---------- LLM 客户端接口 ----------
-# class LLMClient:
-#     """封装大模型调用（支持流式/非流式）"""
-    
-#     async def generate(
-#             self, 
-#             messages: List[Dict[str, str]], 
-#             tools: Optional[List[Dict]] = None) -> Dict:
-#         """
-#         调用LLM，返回响应。
-#         返回格式必须包含：
-#         {
-#             "content": "文本回复" 或 None（如果有工具调用）,
-#             "tool_calls": [{"name": "read_file", "arguments": {"path": "/tmp/a.txt"}}, ...] 或 []
-#         }
-#         """
-#         pass
-
 # ---------- Harness Runtime 主类 ----------
 class HarnessRuntime:
     """

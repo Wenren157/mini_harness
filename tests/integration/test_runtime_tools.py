@@ -60,7 +60,7 @@ async def test_integration():
     print("\n" + "=" * 60)
     print("State 完整消息列表（调试）:")
     print("=" * 60)
-    for msg in runtime.state.messages:
+    for msg in runtime.context.get_context_for_llm():
         print(f"  {msg}")
     
     # 3. 输出结果

@@ -173,10 +173,10 @@ class ContextManager:
         2. 使用 asyncio.Lock 防止并发压缩。
         3. 压缩完成后插入 summary，裁剪旧消息。
         """
-        print(
-            "DEBUG event_bus:",
-            self.event_bus
-        )
+        # print(
+        #     "DEBUG event_bus:",
+        #     self.event_bus
+        # )
 
         print(
             "DEBUG compress background START"
