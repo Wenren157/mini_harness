@@ -50,6 +50,7 @@ class HarnessRuntime:
         self.tools = tool_registry
         self.event_bus: deque = deque(maxlen=self.config.event_bus_maxlen)  # 全量事件记录
         self.state: Optional[AgentState] = None
+        self._trace_id: Optional[str] = None                                # 新增
 
         # ---------- 集成 ContextManager ----------
         # 从 RuntimeConfig 获取 Context token 上限
@@ -71,6 +72,9 @@ class HarnessRuntime:
             self, 
             event_type: EventType, 
             data: Any = None) -> None:
+        
+        if self._trace_id is None:
+            self._trace_id = str(uuid.uuid4())
         
         self.event_bus.append(
             Event(

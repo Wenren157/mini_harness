@@ -1,6 +1,6 @@
 import pytest
 from mini_harness.core.runtime import HarnessRuntime, RuntimeConfig
-from mini_harness.infra.tools import ToolRegistry
+from mini_harness.infra.tools import SandboxExecutor, ToolRegistry
 from mini_harness.core.models import EventType
 
 class MockLLMClient:
@@ -11,7 +11,10 @@ class MockLLMClient:
 async def test_event_bus_truncation():
     config = RuntimeConfig(max_iterations=5, event_bus_maxlen=5)
     llm = MockLLMClient()
-    tools = ToolRegistry()
+    sandbox = SandboxExecutor()
+    tools = ToolRegistry(
+        sandbox=sandbox
+    )
     runtime = HarnessRuntime(config, llm, tools)
 
     # 添加 10 个事件
