@@ -15,6 +15,7 @@ class EventType(Enum):
     ERROR = "error"                    # 异常
     FINISH = "finish"                  # 任务结束
     WARNING = "warning"                # 新增这行（用于记录重复告警，不影响主流程）
+    SUCCESS = "success"                # 新增成功返回
 
 @dataclass
 class Event:

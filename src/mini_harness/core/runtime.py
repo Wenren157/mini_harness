@@ -1,4 +1,6 @@
 from typing import List, Dict, Optional, Callable, Awaitable, Any
+from collections import deque
+from mini_harness.core.interfaces import LLMClient
 from mini_harness.core.models import Event, EventType, AgentState, AgentStatus
 from mini_harness.infra.tools import ToolRegistry
 from mini_harness.infra.config import RuntimeConfig
@@ -8,25 +10,26 @@ import uuid
 import random
 import json
 import tiktoken
+import os, json, time
 
 
 # ---------- LLM 客户端接口 ----------
-class LLMClient:
-    """封装大模型调用（支持流式/非流式）"""
+# class LLMClient:
+#     """封装大模型调用（支持流式/非流式）"""
     
-    async def generate(
-            self, 
-            messages: List[Dict[str, str]], 
-            tools: Optional[List[Dict]] = None) -> Dict:
-        """
-        调用LLM，返回响应。
-        返回格式必须包含：
-        {
-            "content": "文本回复" 或 None（如果有工具调用）,
-            "tool_calls": [{"name": "read_file", "arguments": {"path": "/tmp/a.txt"}}, ...] 或 []
-        }
-        """
-        pass
+#     async def generate(
+#             self, 
+#             messages: List[Dict[str, str]], 
+#             tools: Optional[List[Dict]] = None) -> Dict:
+#         """
+#         调用LLM，返回响应。
+#         返回格式必须包含：
+#         {
+#             "content": "文本回复" 或 None（如果有工具调用）,
+#             "tool_calls": [{"name": "read_file", "arguments": {"path": "/tmp/a.txt"}}, ...] 或 []
+#         }
+#         """
+#         pass
 
 # ---------- Harness Runtime 主类 ----------
 class HarnessRuntime:
@@ -45,7 +48,7 @@ class HarnessRuntime:
         self.config = config
         self.llm = llm_client
         self.tools = tool_registry
-        self.event_bus: List[Event] = []        # 全量事件记录
+        self.event_bus: deque = deque(maxlen=self.config.event_bus_maxlen)  # 全量事件记录
         self.state: Optional[AgentState] = None
 
         # ---------- 集成 ContextManager ----------
@@ -117,11 +120,35 @@ class HarnessRuntime:
             if not self.state.final_answer:
                 self.state.final_answer = "Task stopped due to max iterations or error."
 
+        # ==============================
+        # 新增：等待后台Context压缩完成
+        # ==============================
+
+        if self.context._background_task:
+            await self.context._background_task
+
+        # 在返回前添加持久化
+        # 导出事件到 traces/ 目录
+        trace_dir = "traces"
+        os.makedirs(trace_dir, exist_ok=True)
+        timestamp = int(time.time() * 1000)
+        trace_path = os.path.join(trace_dir, f"trace_{timestamp}.json")
+        with open(trace_path, "w", encoding="utf-8") as f:
+            events_serializable = []
+            for e in self.event_bus:
+                events_serializable.append({
+                    "type": e.type.value,
+                    "timestamp": e.timestamp,
+                    "data": e.data,
+                    "trace_id": e.trace_id
+                })
+            json.dump(events_serializable, f, indent=2, ensure_ascii=False)
+
         return {
             "final_answer": self.state.final_answer,
             "iterations": self.state.current_iteration,
-            "total_tokens": random.randint(100, 500),  # 仅用于演示估算
-            "events": self.event_bus,
+            "total_tokens": random.randint(100, 500),   # 仅用于演示估算
+            "events": list(self.event_bus),             # 将 event_bus 转为列表以便序列化
             "status": self.state.status
         }
     

@@ -1,0 +1,152 @@
+[
+  {
+    "type": "agent_thinking",
+    "timestamp": 1785469777.4570918,
+    "data": "Calling LLM...",
+    "trace_id": "9fede2ef-68f3-4028-9347-896532ef0c4f"
+  },
+  {
+    "type": "llm_request",
+    "timestamp": 1785469777.4570918,
+    "data": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens "
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens "
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens "
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens "
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens "
+        }
+      ]
+    },
+    "trace_id": "9fede2ef-68f3-4028-9347-896532ef0c4f"
+  },
+  {
+    "type": "llm_response",
+    "timestamp": 1785469777.4570918,
+    "data": {
+      "content": "Mock response"
+    },
+    "trace_id": "9fede2ef-68f3-4028-9347-896532ef0c4f"
+  },
+  {
+    "type": "finish",
+    "timestamp": 1785469777.4570918,
+    "data": "Mock response",
+    "trace_id": "9fede2ef-68f3-4028-9347-896532ef0c4f"
+  },
+  {
+    "type": "user_input",
+    "timestamp": 1785469777.4570918,
+    "data": "Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens ",
+    "trace_id": "b725ea62-1b9f-43d9-b9d4-fa68a6d136a3"
+  },
+  {
+    "type": "loop_iteration",
+    "timestamp": 1785469777.4570918,
+    "data": 1,
+    "trace_id": "b725ea62-1b9f-43d9-b9d4-fa68a6d136a3"
+  },
+  {
+    "type": "agent_thinking",
+    "timestamp": 1785469777.4570918,
+    "data": "Calling LLM...",
+    "trace_id": "b725ea62-1b9f-43d9-b9d4-fa68a6d136a3"
+  },
+  {
+    "type": "llm_request",
+    "timestamp": 1785469777.4570918,
+    "data": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens Message 0 with content to fill tokens "
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens Message 1 with content to fill tokens "
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens Message 2 with content to fill tokens "
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens Message 3 with content to fill tokens "
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens Message 4 with content to fill tokens "
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens Message 5 with content to fill tokens "
+        }
+      ]
+    },
+    "trace_id": "b725ea62-1b9f-43d9-b9d4-fa68a6d136a3"
+  },
+  {
+    "type": "llm_response",
+    "timestamp": 1785469777.4570918,
+    "data": {
+      "content": "Mock response"
+    },
+    "trace_id": "b725ea62-1b9f-43d9-b9d4-fa68a6d136a3"
+  },
+  {
+    "type": "finish",
+    "timestamp": 1785469777.4570918,
+    "data": "Mock response",
+    "trace_id": "b725ea62-1b9f-43d9-b9d4-fa68a6d136a3"
+  }
+]

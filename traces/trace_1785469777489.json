@@ -1,0 +1,103 @@
+[
+  {
+    "type": "llm_request",
+    "timestamp": 1785469777.4730787,
+    "data": {
+      "action": "compress_start",
+      "msg_count": 14,
+      "total_tokens": 990
+    },
+    "trace_id": ""
+  },
+  {
+    "type": "llm_request",
+    "timestamp": 1785469777.4730787,
+    "data": {
+      "action": "llm_summarize"
+    },
+    "trace_id": ""
+  },
+  {
+    "type": "success",
+    "timestamp": 1785469777.4730787,
+    "data": {
+      "action": "llm_summarize",
+      "summary": "Mock response"
+    },
+    "trace_id": ""
+  },
+  {
+    "type": "success",
+    "timestamp": 1785469777.4730787,
+    "data": {
+      "action": "compress_done",
+      "new_tokens": 185
+    },
+    "trace_id": ""
+  },
+  {
+    "type": "user_input",
+    "timestamp": 1785469777.4887123,
+    "data": "Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens ",
+    "trace_id": "b78cae8b-7e0b-47d7-8b21-86f65f6670f6"
+  },
+  {
+    "type": "loop_iteration",
+    "timestamp": 1785469777.4887123,
+    "data": 1,
+    "trace_id": "b78cae8b-7e0b-47d7-8b21-86f65f6670f6"
+  },
+  {
+    "type": "agent_thinking",
+    "timestamp": 1785469777.4887123,
+    "data": "Calling LLM...",
+    "trace_id": "b78cae8b-7e0b-47d7-8b21-86f65f6670f6"
+  },
+  {
+    "type": "llm_request",
+    "timestamp": 1785469777.4887123,
+    "data": {
+      "messages": [
+        {
+          "role": "system",
+          "content": "[历史摘要] Mock response"
+        },
+        {
+          "role": "system",
+          "content": "[历史摘要] Mock response"
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens Message 12 with content to fill tokens "
+        },
+        {
+          "role": "assistant",
+          "content": "Mock response"
+        },
+        {
+          "role": "user",
+          "content": "Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens Message 13 with content to fill tokens "
+        }
+      ]
+    },
+    "trace_id": "b78cae8b-7e0b-47d7-8b21-86f65f6670f6"
+  },
+  {
+    "type": "llm_response",
+    "timestamp": 1785469777.4887123,
+    "data": {
+      "content": "Mock response"
+    },
+    "trace_id": "b78cae8b-7e0b-47d7-8b21-86f65f6670f6"
+  },
+  {
+    "type": "finish",
+    "timestamp": 1785469777.4887123,
+    "data": "Mock response",
+    "trace_id": "b78cae8b-7e0b-47d7-8b21-86f65f6670f6"
+  }
+]
