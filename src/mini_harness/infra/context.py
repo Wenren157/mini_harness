@@ -173,10 +173,6 @@ class ContextManager:
         2. 使用 asyncio.Lock 防止并发压缩。
         3. 压缩完成后插入 summary，裁剪旧消息。
         """
-        # print(
-        #     "DEBUG event_bus:",
-        #     self.event_bus
-        # )
 
         print(
             "DEBUG compress background START"
@@ -206,7 +202,7 @@ class ContextManager:
                     m for m in self.window.messages
                     if m["role"] != "system"
                 ]
-                if len(messages_to_summarize) <= 3:
+                if not messages_to_summarize:
                     return
                 
                 # 2. 取最近 5 条非 system 消息进行总结
@@ -227,7 +223,17 @@ class ContextManager:
                                 data={"action": "llm_summarize"}
                             )
                         )
+                    
+                    print(
+                        "DEBUG compression messages:",
+                        summary_messages
+                    )
                     response = await self.llm.generate(summary_messages)
+
+                    print(
+                        "DEBUG compression response:",
+                        response
+                    )
 
                     # ---- 3. LLM 成功 ----
                     if self.event_bus is not None:
@@ -275,13 +281,19 @@ class ContextManager:
 
                 # 压缩完成（可选再记录一次 SUCCESS）
                 if self.event_bus is not None:
+
+                    print("DEBUG compress DONE")
                     self.event_bus.append(
                         Event(
                             type=EventType.SUCCESS,
-                            data={"action": "compress_done", "new_tokens": self.window.total_tokens}
+                            data={
+                                "action": "compress_done", 
+                                "new_tokens": self.window.total_tokens
+                            }
                         )
                     )
             finally:
+                print("DEBUG compression FINALLY")
                 self._compression_triggered = False
 
     def get_context_for_llm(self) -> List[Dict[str, str]]:
