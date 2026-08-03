@@ -5,12 +5,13 @@ from mini_harness.core.models import Event, EventType, AgentState, AgentStatus
 from mini_harness.infra.tools import ToolRegistry
 from mini_harness.infra.config import RuntimeConfig
 from mini_harness.infra.context import ContextManager
+from mini_harness.mcp.client import MCPClient
 import asyncio
 import uuid
 import random
 import json
-import tiktoken
 import os, json, time
+import sys
 
 
 # ---------- Harness Runtime 主类 ----------
@@ -26,13 +27,20 @@ class HarnessRuntime:
             llm_client: LLMClient, 
             tool_registry: ToolRegistry, 
             context_manager: Optional[ContextManager] = None,   # 新增
-            ):
+    ):
         self.config = config
         self.llm = llm_client
         self.tools = tool_registry
         self.event_bus: deque = deque(maxlen=self.config.event_bus_maxlen)  # 全量事件记录
         self.state: Optional[AgentState] = None
         self._trace_id: Optional[str] = None                                # 新增
+
+        # ===== MCP 相关属性（仅保存配置，不启动） =====
+        self._mcp_client = None
+        self._mcp_process = None
+        self._mcp_started = False
+        self._enable_mcp = getattr(self.config, 'enable_mcp', False)
+        self.workspace = self.config.workspace
 
         # ---------- 集成 ContextManager ----------
         # 从 RuntimeConfig 获取 Context token 上限
@@ -50,6 +58,31 @@ class HarnessRuntime:
             if not hasattr(self.context, 'event_bus') or self.context.event_bus is None:
                 self.context.event_bus = self.event_bus
 
+        # ========== 新增：MCP 客户端初始化 ==========
+        self._mcp_client: Optional[MCPClient] = None
+        self._mcp_process = None
+
+    async def close(self):
+        """关闭 MCP 客户端和子进程（非必须，但建议在程序退出前调用）"""
+        if self._mcp_client:
+            await self._mcp_client.close()
+            self._mcp_client = None
+
+        if self._mcp_process:
+            if self._mcp_process.returncode is None:
+                self._mcp_process.terminate()
+
+                try:
+                    await asyncio.wait_for(
+                        self._mcp_process.wait(),
+                        timeout=3
+                    )
+                except asyncio.TimeoutError:
+                    self._mcp_process.kill()
+                    await self._mcp_process.wait()
+
+            self._mcp_process = None
+
     def _record_event(
             self, 
             event_type: EventType, 
@@ -66,7 +99,56 @@ class HarnessRuntime:
             )
         )
    
-    
+    # ========== MCP 懒加载启动 ==========
+    async def _ensure_mcp_started(self):
+        """异步启动 MCP Server 子进程并完成握手（仅执行一次）"""
+        if self._mcp_started or not self._enable_mcp:
+            return
+
+        # 构建子进程环境变量
+        env = os.environ.copy()
+        # 假设项目采用 src/ 布局，根据当前文件位置向上三级得到项目根
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        src_dir = os.path.join(project_root, "src")
+        if os.path.isdir(src_dir):
+            pythonpath = src_dir
+        else:
+            # 如果不是 src/ 布局，直接使用项目根
+            pythonpath = project_root
+        if "PYTHONPATH" in env:
+            pythonpath += os.pathsep + env["PYTHONPATH"]
+        env["PYTHONPATH"] = pythonpath
+        env["MCP_WORKSPACE"] = self.workspace
+
+        # 启动子进程
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "mini_harness.mcp.server",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=project_root,
+            env=env,
+        )
+        self._mcp_process = process
+        self._mcp_client = MCPClient(process)
+        await self._mcp_client.initialize()
+        self._mcp_started = True
+
+        # 后台任务读取 stderr（便于调试）
+        async def read_stderr():
+            while True:
+                line = await process.stderr.readline()
+                if not line:
+                    break
+                print(
+                    f"[MCP Server] {line.decode().strip()}",
+                    file=sys.stderr
+                )
+        asyncio.create_task(read_stderr())
+
+
     async def run(self, user_query: str) -> Dict[str, Any]:
         """
         核心入口：接收用户输入，执行Agent Loop，返回最终结果。
@@ -109,7 +191,6 @@ class HarnessRuntime:
         # ==============================
         # 新增：等待后台Context压缩完成
         # ==============================
-
         if self.context._background_task:
             await self.context._background_task
 
@@ -141,6 +222,7 @@ class HarnessRuntime:
     async def _step(self) -> bool:
         """
         单步执行：调用LLM -> 判断是否要调用工具 -> 执行工具 -> 返回结果。
+        集成 MCP：如果启用了 MCP，则通过 MCPClient 调用工具；否则使用原有 ToolRegistry。
         返回True表示循环继续，False表示结束或出错。
         内部通过 self.state 维护当前状态。
         """
@@ -200,21 +282,37 @@ class HarnessRuntime:
                     self._record_event(EventType.ERROR, error_msg)
                     raise RecursionError(error_msg)
             
-            # ========== 原有的执行工具代码（if tool_calls: ...）完全不动 ==========
+            # ========== 工具执行（核心修改） ==========
             if tool_calls:
                 self.state.status = AgentStatus.CALLING_TOOL
                 self.state.pending_tool_calls = tool_calls
                 self._record_event(EventType.TOOL_CALL_REQUEST, tool_calls)
 
+                # ===== 确保 MCP 已启动（如果启用） =====
+                if self._enable_mcp:
+                    await self._ensure_mcp_started()
+
                 tasks = []
                 for tc in tool_calls:
                     name = tc["name"]
                     args = tc.get("arguments", {})
-                    # 使用配置的超时时间
-                    task = asyncio.wait_for(
-                        self.tools.execute_with_retry(name, **args), 
-                        timeout=self.config.tool_timeout
-                    )
+
+                    # 根据是否启用 MCP 选择执行方式
+                    if self._enable_mcp and self._mcp_client is not None:
+                        # 使用 MCPClient 调用工具
+                        async def mcp_call(name, args):
+                            return await self._mcp_client.call_tool(name, args)
+                        task = asyncio.wait_for(
+                            mcp_call(name, args),
+                            timeout=self.config.tool_timeout
+                        )
+
+                    else:
+                        # 原有 ToolRegistry 方式
+                        task = asyncio.wait_for(
+                            self.tools.execute_with_retry(name, **args), 
+                            timeout=self.config.tool_timeout
+                        )
 
                     tasks.append(task)
 
@@ -232,6 +330,7 @@ class HarnessRuntime:
                         except Exception as e:
                             results.append(e)
 
+                # 处理结果（与原有逻辑一致）
                 for idx, tc in enumerate(tool_calls):
                     result = results[idx]
                     if isinstance(result, Exception):
@@ -241,8 +340,6 @@ class HarnessRuntime:
                             error_msg = f"Timeout after {self.config.tool_timeout}s"
                         else:
                             error_msg = str(result)
-
-
                         result_str = f"{error_type}: {error_msg}"
                         self._record_event(
                             EventType.ERROR, 
@@ -256,11 +353,7 @@ class HarnessRuntime:
                         )
                     else:
                         result_str = str(result)
-                        self._record_event(
-                            EventType.TOOL_CALL_RESULT,
-                            {"name": tc["name"], "result": result_str}
-                        )
-
+                        
                     self._record_event(
                         EventType.TOOL_CALL_RESULT, 
                         {

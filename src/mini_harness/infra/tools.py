@@ -7,10 +7,6 @@ from dataclasses import dataclass
 import aiofiles
 import time
 
-# ---------- 工作区根目录（沙箱边界） ----------
-WORKSPACE_ROOT = os.path.abspath("./workspace")
-os.makedirs(WORKSPACE_ROOT, exist_ok=True)
-
 MAX_READ_SIZE = 1 * 1024 * 1024      # 1 MB
 MAX_WRITE_SIZE = 1 * 1024 * 1024     # 1 MB
 
@@ -30,6 +26,17 @@ class SandboxExecutor:
     负责在受限环境下执行工具。
     所有执行必须有超时、资源限制、错误捕获。
     """
+    def __init__(self, workspace_root: str):
+
+        if not workspace_root:
+            raise ValueError(
+                "workspace_root is required"
+            )
+        self.workspace_root = os.path.abspath(workspace_root)
+        os.makedirs(
+            self.workspace_root,
+            exist_ok=True
+        )
     
     async def execute_shell(
             self, 
@@ -137,6 +144,15 @@ class SandboxExecutor:
         约束: 必须限制写入大小，且路径必须限制在当前 Workspace 目录下（防止越权）。
         """
         safe_path = self._safe_path(path)
+
+        print(
+            "DEBUG write_file:",
+            self.workspace_root,
+            path,
+            safe_path,
+            file=sys.stderr
+        )
+
         if safe_path is None:
             return {"success": False, "bytes_written": 0, "error": "路径越权"}
         
@@ -154,17 +170,28 @@ class SandboxExecutor:
             return {"success": True, "bytes_written": bytes_written, "error": None}
         except Exception as e:
             return {"success": False, "bytes_written": 0, "error": str(e)}
-    @staticmethod
-    def _safe_path(path: str) -> Optional[str]:
+  
+    def _safe_path(self, path: str) -> Optional[str]:
         """
         将传入路径规范化为绝对路径，并检查是否在 WORKSPACE_ROOT 内。
         防止目录遍历攻击（如 ../../../etc/passwd）。
         """
-        abs_path = os.path.abspath(os.path.join(WORKSPACE_ROOT, path))
-        # 使用 realpath 解析符号链接，防止链接逃逸
+        abs_path = os.path.abspath(
+            os.path.join(
+                self.workspace_root,
+                path
+            )
+        )
         real_path = os.path.realpath(abs_path)
-        if not real_path.startswith(WORKSPACE_ROOT):
+        workspace_real = os.path.realpath(self.workspace_root)
+        if os.path.commonpath(
+            [
+                real_path,
+                workspace_real
+            ]
+        ) != workspace_real:
             return None
+        
         return real_path
      
 
@@ -232,14 +259,14 @@ class ToolRegistry:
             from last_exception
 
 # ---------- 默认工具工厂（Factory） ----------
-def create_default_tools() -> ToolRegistry:
+def create_default_tools(workspace: str) -> ToolRegistry:
     """
     创建包含以下默认工具的 Registry：
     1. execute_command   -> 执行 Shell 命令
     2. read_file         -> 读取文件
     3. write_file        -> 写入文件
     """
-    sandbox = SandboxExecutor()
+    sandbox = SandboxExecutor(workspace_root=workspace)
     registry = ToolRegistry(sandbox)
     # ... 注册逻辑 ...
 

@@ -14,10 +14,10 @@ import mini_harness.infra.tools as tools
 
 
 class MCPServer:
-    def __init__(self, workspace: Optional[str] = None):
+    def __init__(self, workspace: str):
         
 
-        self.registry = create_default_tools()
+        self.registry = create_default_tools(workspace)
 
         self.tools = [
             {
@@ -57,6 +57,12 @@ class MCPServer:
         ]
 
     async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
+
+        print(
+            "SERVER REQUEST:",
+            request,
+            file=sys.stderr
+        )
         req_id = request.get("id")
         method = request.get("method")
         params = request.get("params", {})
@@ -75,7 +81,12 @@ class MCPServer:
     async def _handle_tool_call(self, req_id: Optional[int], tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         try:
 
-
+            print(
+                "SERVER TOOL CALL:",
+                tool_name,
+                arguments,
+                file=sys.stderr
+            )
             if tool_name == "read_file":
                 result = await self.registry.execute_with_retry(
                             "read_file",
@@ -159,5 +170,10 @@ class MCPServer:
 if __name__ == "__main__":
     # 从环境变量读取 workspace，便于测试时配置
     workspace = os.environ.get("MCP_WORKSPACE")
-    server = MCPServer(workspace=workspace) if workspace else MCPServer()
+    if not workspace:
+        raise RuntimeError(
+            "MCP_WORKSPACE is required"
+        )
+    
+    server = MCPServer(workspace=workspace) 
     asyncio.run(server.run_stdio())
