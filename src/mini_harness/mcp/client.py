@@ -14,6 +14,8 @@ class MCPClient:
     def __init__(self, server_process):
         self.process = server_process
         self._request_id = 0
+        # 新增
+        self._lock = asyncio.Lock()
         # TODO: 未来支持多 Server 连接池管理
 
     @classmethod
@@ -44,26 +46,37 @@ class MCPClient:
         )
         return cls(process)
 
-    async def _send_request(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+    async def _send_request(
+            self, 
+            method: str, 
+            params: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        
         """发送 JSON-RPC 请求并等待响应"""
-        self._request_id += 1
-        request = {
-            "jsonrpc": "2.0",
-            "id": self._request_id,
-            "method": method,
-            "params": params or {},
-        }
-        # 写入 stdin
-        self.process.stdin.write(json.dumps(request).encode() + b"\n")
-        await self.process.stdin.drain()
-        # 读取 stdout（一行一个响应）
-        response_line = await self.process.stdout.readline()
-        if not response_line:
-            # 尝试读取 stderr 获取错误信息
-            stderr_data = await self.process.stderr.read()
-            error_msg = stderr_data.decode().strip() if stderr_data else "No stderr output"
-            raise RuntimeError(f"MCP Server closed connection. stderr: {error_msg}")
-        return json.loads(response_line)
+        async with self._lock:
+            self._request_id += 1
+            request = {
+                "jsonrpc": "2.0",
+                "id": self._request_id,
+                "method": method,
+                "params": params or {},
+            }
+            # 写入 stdin
+            self.process.stdin.write(json.dumps(request).encode() + b"\n")
+            await self.process.stdin.drain()
+            # 读取 stdout（一行一个响应）
+            response_line = await self.process.stdout.readline()
+            print(
+                "RAW MCP STDOUT:",
+                repr(response_line),
+                file=sys.stderr
+            )
+            if not response_line:
+                # 尝试读取 stderr 获取错误信息
+                stderr_data = await self.process.stderr.read()
+                error_msg = stderr_data.decode().strip() if stderr_data else "No stderr output"
+                raise RuntimeError(f"MCP Server closed connection. stderr: {error_msg}")
+            return json.loads(response_line)
 
     async def initialize(self) -> Dict[str, Any]:
         return await self._send_request("initialize", {})
@@ -81,6 +94,11 @@ class MCPClient:
             }
         )
         print("DEBUG MCP RESPONSE:", response)
+
+        if "error" in response:
+            raise RuntimeError(
+                response["error"]["message"]
+            )
 
         return response.get("result", {}).get("content", {})
 
