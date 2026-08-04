@@ -77,11 +77,11 @@ async def test_integration(tmp_path):
     errors = [evt for evt in runtime.event_bus if evt.type.value == "error"]
     
     if errors:
-        print(f"✅ 验证通过！共捕获 {len(errors)} 条 ERROR 事件：")
+        print(f"验证通过！共捕获 {len(errors)} 条 ERROR 事件：")
         for evt in errors:
             print(f"  - {evt.data}")
     else:
-        print("❌ 验证失败：未捕获到 ERROR 事件。")
+        print("验证失败：未捕获到 ERROR 事件。")
 
     # 4. 检查状态机是否记录错误
     print("\n" + "=" * 60)

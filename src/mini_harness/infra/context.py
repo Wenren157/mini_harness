@@ -59,7 +59,7 @@ class ContextWindow:
 
     max_tokens: int = 8000              # 模型上下文上限
     reserve_tokens: int = 1000          # 为 system/instruction 预留
-    messages: List[Dict[str, str]] = field(default_factory=list)
+    messages: List[Dict[str, Any]] = field(default_factory=list)
     total_tokens: int = 0
 
     def add_message(self, role: str, content: str) -> None:
@@ -148,8 +148,14 @@ class ContextManager:
         if self.window.is_overflow():
             self._trigger_async_compression()
 
-    def add_tool_result(self, tool_name: str, result: str) -> None:
-        self.window.add_message("tool", f"[{tool_name}] {result}")
+    def add_tool_result(self, tool_call_id: str, result: str) -> None:
+        self.window.messages.append(
+            {
+                "role":"tool",
+                "tool_call_id":tool_call_id,
+                "content":result
+            }
+        )
         # TODO: 接入 event_bus 记录此事件
         if self.window.is_overflow():
             self._trigger_async_compression()
@@ -165,6 +171,13 @@ class ContextManager:
         if self._background_task is None or self._background_task.done():
             self._background_task = asyncio.create_task(self._compress_background())
             # TODO: 接入 event_bus 记录压缩触发事件（包含当前 token 数、消息数量）
+    def add_assistant_tool_calls(self,tool_calls):
+        self.window.messages.append(
+            {
+                "role":"assistant",
+                "tool_calls":tool_calls
+            }
+        )
 
     async def _compress_background(self) -> None:
         """
