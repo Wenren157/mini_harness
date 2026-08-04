@@ -2,7 +2,7 @@ import os
 import sys
 import asyncio
 import time
-from mini_harness.infra.tools import create_default_tools, WORKSPACE_ROOT
+from mini_harness.infra.tools import create_default_tools
 
 
 # =============== 新增兼容windows和Linux双系统测试 =========================
@@ -13,7 +13,8 @@ def is_windows():
 async def demo():
     print("=== 准备沙箱环境 ===")
     # 在 workspace 中创建测试文件 a.txt
-    test_file = os.path.join(WORKSPACE_ROOT, "a.txt")
+    workspace = "./workspace"
+    test_file = os.path.join(workspace, "a.txt")
     with open(test_file, "w") as f:
         f.write("Hello, Mini Harness!\nThis is a test file.")
 

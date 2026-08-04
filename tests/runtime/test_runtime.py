@@ -9,7 +9,7 @@ from mini_harness.infra.tools import  ToolRegistry, SandboxExecutor
 from mini_harness.infra.config import RuntimeConfig
 from mini_harness.core.models import Event, EventType
 from tests.mocks import MockLLMClient  # ← 只导入 MockLLMClient
-
+import tempfile
 
 # ---------- 测试函数 ----------
 async def run_test(
@@ -26,7 +26,8 @@ async def run_test(
     )
 
     # ========== 修复点：创建真实的 SandboxExecutor ==========
-    sandbox = SandboxExecutor()  # 真实沙箱
+    workspace = tempfile.mkdtemp()
+    sandbox = SandboxExecutor(workspace_root=workspace)  # 真实沙箱
     registry = ToolRegistry(sandbox=sandbox) # 传入 sandbox
 
     # 注册测试工具（注意：这里的 func 要传入实际可执行的异步函数）
@@ -98,7 +99,8 @@ async def test_runtime_final():
 
     llm = MockLLMClient(mode="final")
 
-    sandbox = SandboxExecutor()
+    workspace = tempfile.mkdtemp()
+    sandbox = SandboxExecutor(workspace_root=workspace)
     # 真实 Registry，但不用注册工具，因为 LLM 不会调用工具
     registry = ToolRegistry(
         sandbox=sandbox

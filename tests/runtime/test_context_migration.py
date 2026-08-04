@@ -116,6 +116,9 @@ async def test_context_manager_message_migration():
     # 4. 验证 state.messages 没有被继续使用
     # =========================
 
-    assert len(runtime.state.messages) == 0, \
-        "Runtime仍然在使用state.messages"
+    assert not hasattr(runtime.state, "messages")
+
+    assert hasattr(runtime, "context")
+
+    assert len(runtime.context.get_context_for_llm()) > 0
 

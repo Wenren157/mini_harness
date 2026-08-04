@@ -1,6 +1,7 @@
 import asyncio
 import sys
 import os
+import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mini_harness.core.runtime import HarnessRuntime, RuntimeConfig
@@ -8,13 +9,15 @@ from mini_harness.infra.tools import create_default_tools
 from tests.mocks import MockLLMClient
 
 
-async def test_integration():
+@pytest.mark.asyncio
+async def test_integration(tmp_path):
     print("=" * 60)
     print("正确的集成测试：Runtime + Tools (调用 run 方法)")
     print("=" * 60)
 
     # 1. 创建真实组件
-    tools = create_default_tools()
+    workspace = str(tmp_path)
+    tools = create_default_tools(workspace)
     # 准备一个会返回 tool_calls 的 Mock LLM
     llm = MockLLMClient(mode="multi")  # 让 LLM 一上来就要求调用工具
     config = RuntimeConfig(

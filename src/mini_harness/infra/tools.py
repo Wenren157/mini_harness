@@ -1,5 +1,6 @@
 import asyncio
 import os
+from pathlib import Path
 import sys
 import subprocess
 from typing import Dict, Any, List, Optional, Callable, Awaitable
@@ -26,7 +27,11 @@ class SandboxExecutor:
     负责在受限环境下执行工具。
     所有执行必须有超时、资源限制、错误捕获。
     """
-    def __init__(self, workspace_root: str):
+    def __init__(
+            self, 
+            workspace_root="./workspace"
+    ):
+        self.workspace_root = Path(workspace_root)
 
         if not workspace_root:
             raise ValueError(
