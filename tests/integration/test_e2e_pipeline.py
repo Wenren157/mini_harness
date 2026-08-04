@@ -24,7 +24,11 @@ class E2EMockLLM:
     def __init__(self):
         self.calls = 0
 
-    async def generate(self, messages):
+    async def generate(
+            self, 
+            messages,
+            tools=None
+    ):
 
         self.calls += 1
 

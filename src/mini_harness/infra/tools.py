@@ -217,9 +217,9 @@ class ToolRegistry:
     def register(
             self, 
             name: str, 
+            func: Callable[..., Awaitable[Any]],
             description: str, 
-            parameters: Dict[str, Any], 
-            func: Callable[..., Awaitable[Any]]
+            parameters: Dict[str, Any]
     ) -> None:
         
         """注册工具，参数描述遵循 OpenAI Function Calling 格式"""

@@ -1,6 +1,10 @@
 import pytest
 import os
 
+import pytest
+import shutil
+from pathlib import Path
+
 def pytest_addoption(parser):
     parser.addoption(
         "--use-real-llm",
@@ -25,3 +29,16 @@ def set_use_real_llm(request):
         os.environ.pop("USE_REAL_LLM", None)
     
     return use_real
+
+
+@pytest.fixture(autouse=True)
+def clean_trace():
+    """
+    每个测试执行前清理旧 trace 文件，
+    防止历史测试产物污染当前测试。
+    """
+    root = Path(__file__).parent.parent
+    trace_dir = root / "traces"
+    if trace_dir.exists():
+        shutil.rmtree(trace_dir)
+    yield

@@ -209,6 +209,18 @@ class HarnessRuntime:
                     "data": e.data,
                     "trace_id": e.trace_id
                 })
+            print(
+                "========== DEBUG EVENTS BEFORE JSON =========="
+            )
+
+            for e in events_serializable:
+                print(
+                    e
+                )
+
+            print(
+                "=============================================="
+            )
             json.dump(events_serializable, f, indent=2, ensure_ascii=False)
 
         return {
@@ -233,12 +245,31 @@ class HarnessRuntime:
 
             messages = self.context.get_context_for_llm()
 
+            
+            # 获取工具schema
+            tools_schema = None
+            if self._enable_mcp and self._mcp_client is not None:
+                # MCP模式暂时先保持兼容
+                # 后续可以从 MCP tools/list 动态获取 schema
+                pass
+            else:
+                tools_schema = self.tools.get_schema()
+
             self._record_event(
-                EventType.LLM_REQUEST, 
-                {"messages": messages}
+                EventType.LLM_REQUEST,
+                {
+                    "messages": messages,
+                    "tools": tools_schema
+                }
             )
-            response = await self.llm.generate(messages)
-            self._record_event(EventType.LLM_RESPONSE, response)
+            response = await self.llm.generate(
+                messages,
+                tools=tools_schema
+            )
+            self._record_event(
+                EventType.LLM_RESPONSE,
+                response
+            )
 
             content = response.get("content")
             tool_calls = response.get("tool_calls", [])
@@ -286,6 +317,24 @@ class HarnessRuntime:
             if tool_calls:
                 self.state.status = AgentStatus.CALLING_TOOL
                 self.state.pending_tool_calls = tool_calls
+
+                assistant_tool_calls = []
+                for tc in tool_calls:
+                    assistant_tool_calls.append(
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": json.dumps(
+                                    tc["arguments"],
+                                    ensure_ascii=False
+                                )
+                            }
+                        }
+                    )
+                self.context.add_assistant_tool_calls(assistant_tool_calls)
+
                 self._record_event(EventType.TOOL_CALL_REQUEST, tool_calls)
 
                 # ===== 确保 MCP 已启动（如果启用） =====
@@ -362,7 +411,10 @@ class HarnessRuntime:
                         }
                     )
                     # 然后添加到 ContextManager（注意不需要 tool_call_id，ContextManager 只存储 role 和 content）
-                    self.context.add_tool_result(tc["name"], result_str)
+                    self.context.add_tool_result(
+                        tool_call_id=tc["id"],
+                        result=result_str
+                    )
                     # TODO:
                     #         ContextManager.add_tool_result()
                     #         需要支持 tool_call_id
@@ -380,6 +432,22 @@ class HarnessRuntime:
                 return False
 
         except Exception as e:
+            #调试打印：
+            print(
+                "========== RUNTIME STEP ERROR ==========",
+                flush=True
+            )
+
+            print(
+                type(e).__name__,
+                str(e),
+                flush=True
+            )
+
+            print(
+                "========================================",
+                flush=True
+            )
             self.state.error_info = f"Step failed: {str(e)}"
             self.state.status = AgentStatus.ERROR
             self._record_event(EventType.ERROR, self.state.error_info)

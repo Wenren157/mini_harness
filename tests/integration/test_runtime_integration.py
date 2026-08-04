@@ -64,14 +64,25 @@ async def test_runtime_mcp_integration_write_read(config, mock_llm, tool_registr
         class SequentialMockLLM(LLMClient):
             def __init__(self):
                 self.step = 0
-            async def generate(self, messages):
+            async def generate(
+                     self,
+                messages,
+                tools=None
+            ):
                 self.step += 1
                 if self.step == 1:
                     # 写入文件
                     return {
                         "content": None,
                         "tool_calls": [
-                            {"name": "write_file", "arguments": {"path": "test_mcp.txt", "content": "Integration Test"}}
+                            {
+                                "id": "mock_call_1",
+                                "name": "write_file", 
+                                "arguments": {
+                                    "path": "test_mcp.txt", 
+                                    "content": "Integration Test"
+                                    }
+                            }
                         ]
                     }
                 elif self.step == 2:
@@ -79,7 +90,13 @@ async def test_runtime_mcp_integration_write_read(config, mock_llm, tool_registr
                     return {
                         "content": None,
                         "tool_calls": [
-                            {"name": "read_file", "arguments": {"path": "test_mcp.txt"}}
+                            {
+                                "id":"mock_call_2",
+                                "name": "read_file", 
+                                "arguments": {
+                                    "path": "test_mcp.txt"
+                                    }
+                            }
                         ]
                     }
                 else:
@@ -137,17 +154,22 @@ async def test_runtime_mcp_execute_command(config, mock_llm, tool_registry):
             def __init__(self):
                 self.called=False
 
-            async def generate(self,messages):
+            async def generate(
+                self,
+                messages,
+                tools=None
+            ):
                 if not self.called:
                     self.called=True
                     return {
                         "content":None,
                         "tool_calls":[
                             {
-                            "name":"execute_command",
-                            "arguments":{
-                            "command":"echo hello"
-                            }
+                                "id":"mock_call_1",
+                                "name":"execute_command",
+                                "arguments":{
+                                "command":"echo hello"
+                                }
                             }
                         ]
                     }
