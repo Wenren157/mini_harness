@@ -2,10 +2,13 @@
 import asyncio
 import sys
 import os
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from mini_harness.infra.tools import SandboxExecutor
 
+@pytest.mark.asyncio
 async def test_timeout():
     sandbox = SandboxExecutor()
     
