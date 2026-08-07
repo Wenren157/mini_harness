@@ -24,6 +24,11 @@ TEST_GROUPS = {
         "tests/integration/test_e2e_pipeline.py",
         "tests/integration/test_full_pipeline.py",
         "tests/integration/test_runtime_tools.py",
+    ],
+
+    # 真实模型测试
+    "real_llm": [
+        "tests/real_llm/test_real_llm_pipeline.py"
     ]
 }
 
