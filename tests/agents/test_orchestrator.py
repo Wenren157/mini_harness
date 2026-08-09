@@ -46,25 +46,67 @@ class TestOrchestrator:
         # 执行后检查 Runtime 实例属性未改变
         assert set(dir(runtime)) == original_attrs
 
-    @pytest.mark.asyncio
-    async def test_scope_is_stored(self):
+    def test_scope_is_stored(self):
+        from mini_harness.agents.scope import AgentScope
+
         runtime = MockRuntime()
         planner = Planner()
-        scope = {"agent_id": "test", "workspace": "/tmp/test"}
-        orchestrator = Orchestrator(runtime, planner, scope=scope)
-        assert orchestrator.scope == scope
+
+        scope = AgentScope(
+            agent_id="test",
+            workspace="/tmp/test"
+        )
+
+        orchestrator = Orchestrator(
+            runtime,
+            planner,
+            scope=scope
+        )
+
+        assert orchestrator.scope is scope
+    
+    def test_scope_is_injected_into_executor(self):
+        """
+        验证:
+
+        Orchestrator
+             |
+             v
+        Executor
+
+        Scope不会丢失。
+        """
+
+        from mini_harness.agents.scope import AgentScope
+
+        runtime = MockRuntime()
+        planner = Planner()
+
+        scope = AgentScope(
+            agent_id="analysis_agent",
+            workspace="/tmp/analysis"
+        )
+
+        orchestrator = Orchestrator(
+            runtime,
+            planner,
+            scope=scope
+        )
+
+        assert orchestrator.scope is scope
+        assert orchestrator.executor.scope is scope
 
     def test_orchestrator_does_not_import_execution_components(self):
         """
-    Orchestrator不应该依赖Tool/MCP/Sandbox执行层组件。
-    检查模块import，而不是检查注释内容。
-    """
-    import inspect
-    import mini_harness.agents.orchestrator as orchestrator_module
+        Orchestrator不应该依赖Tool/MCP/Sandbox执行层组件。
+        检查模块import，而不是检查注释内容。
+        """
+        import inspect
+        import mini_harness.agents.orchestrator as orchestrator_module
 
-    source = inspect.getsource(orchestrator_module)
+        source = inspect.getsource(orchestrator_module)
 
-    assert "from mini_harness.tools" not in source
-    assert "ToolRegistry(" not in source
-    assert "MCPClient(" not in source
-    assert "SandboxExecutor(" not in source
+        assert "from mini_harness.tools" not in source
+        assert "ToolRegistry(" not in source
+        assert "MCPClient(" not in source
+        assert "SandboxExecutor(" not in source

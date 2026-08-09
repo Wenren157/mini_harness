@@ -6,6 +6,7 @@ from mini_harness.infra.tools import ToolRegistry
 from mini_harness.infra.config import RuntimeConfig
 from mini_harness.infra.context import ContextManager
 from mini_harness.mcp.client import MCPClient
+from mini_harness.agents.scope import AgentScope
 import asyncio
 import uuid
 import random
@@ -27,10 +28,12 @@ class HarnessRuntime:
             llm_client: LLMClient, 
             tool_registry: ToolRegistry, 
             context_manager: Optional[ContextManager] = None,   # 新增
+            scope: Optional[AgentScope] = None,
     ):
         self.config = config
         self.llm = llm_client
         self.tools = tool_registry
+        self.scope = scope              # Agent隔离上下文
         self.event_bus: deque = deque(maxlen=self.config.event_bus_maxlen)  # 全量事件记录
         self.state: Optional[AgentState] = None
         self._trace_id: Optional[str] = None                                # 新增
@@ -40,7 +43,14 @@ class HarnessRuntime:
         self._mcp_process = None
         self._mcp_started = False
         self._enable_mcp = getattr(self.config, 'enable_mcp', False)
-        self.workspace = self.config.workspace
+
+        #----------------将原本的workspace改成scope---------------------
+        if self.scope is not None:
+            self.agent_id = self.scope.agent_id
+            self.workspace = self.scope.workspace
+        else:
+            self.agent_id = None
+            self.workspace = self.config.workspace
 
         # ---------- 集成 ContextManager ----------
         # 从 RuntimeConfig 获取 Context token 上限

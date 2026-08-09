@@ -19,6 +19,7 @@ from typing import Dict, Any, List, Optional
 from mini_harness.core.runtime import HarnessRuntime
 from mini_harness.agents.planner import Planner, PlanStep
 from mini_harness.agents.executor import Executor
+from mini_harness.agents.scope import AgentScope
 
 
 class Orchestrator:
@@ -41,14 +42,18 @@ class Orchestrator:
         self,
         runtime: HarnessRuntime,
         planner: Planner,
-        scope: Optional[Dict[str, Any]] = None,
+        scope: Optional[AgentScope] = None
     ):
         self.runtime = runtime
         self.planner = planner
-        self.executor = Executor(runtime)
 
         # Agent 独立资源范围，未来用于 workspace / context / memory 隔离
-        self.scope = scope or {}
+        self.scope = scope 
+        
+        self.executor = Executor(
+            runtime,
+            scope
+        )
 
     async def run_goal(self, goal: str) -> Dict[str, Any]:
         """
