@@ -18,6 +18,7 @@ from typing import List, Dict, Any
 
 from mini_harness.core.runtime import HarnessRuntime
 from mini_harness.agents.planner import PlanStep
+from mini_harness.agents.scope import AgentScope
 
 
 class Executor:
@@ -39,8 +40,13 @@ class Executor:
     保持一致。
     """
 
-    def __init__(self, runtime: HarnessRuntime):
+    def __init__(
+            self, 
+            runtime: HarnessRuntime,
+            scope: AgentScope
+    ):
         self.runtime = runtime
+        self.scope = scope
 
     async def execute_steps(self, steps: List[PlanStep]) -> Dict[int, Any]:
         """

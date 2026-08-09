@@ -10,6 +10,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 from mini_harness.agents.executor import Executor
 from mini_harness.agents.planner import PlanStep
+from mini_harness.agents.scope import AgentScope
 
 
 class MockRuntime:
@@ -28,7 +29,14 @@ class TestExecutor:
     @pytest.mark.asyncio
     async def test_execute_single_step_via_runtime_run(self):
         runtime = MockRuntime()
-        executor = Executor(runtime)
+        scope = AgentScope(
+            agent_id="test_executor",
+            workspace="/tmp/test_executor"
+        )
+        executor = Executor(
+            runtime,
+            scope
+        )
         step = PlanStep(step_id=1, description="读取文件")
         result = await executor.execute_single_step(step)
         assert "executed: 读取文件" in result
@@ -36,7 +44,14 @@ class TestExecutor:
     @pytest.mark.asyncio
     async def test_execute_multiple_steps_in_sequence(self):
         runtime = MockRuntime()
-        executor = Executor(runtime)
+        scope = AgentScope(
+            agent_id="test_executor",
+            workspace="/tmp/test_executor"
+        )
+        executor = Executor(
+            runtime,
+            scope
+        )
         steps = [
             PlanStep(step_id=1, description="步骤一"),
             PlanStep(step_id=2, description="步骤二", depends_on=[1]),
@@ -53,7 +68,14 @@ class TestExecutor:
         """
 
         runtime = MockRuntime()
-        executor = Executor(runtime)
+        scope = AgentScope(
+            agent_id="test_executor",
+            workspace="/tmp/test_executor"
+        )
+        executor = Executor(
+            runtime,
+            scope
+        )
 
         with patch.object(
             executor.runtime,
