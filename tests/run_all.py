@@ -6,6 +6,7 @@ TEST_GROUPS = {
 
     # 每次修改 Runtime/MCP 必跑
     "smoke": [
+
         "tests/runtime/test_runtime.py",
         "tests/mcp/test_mcp.py",
         "tests/integration/test_runtime_integration.py",
@@ -13,10 +14,20 @@ TEST_GROUPS = {
 
     # 模块级回归
     "regression": [
+
         "tests/runtime",
         "tests/sandbox",
+
+        # Memory
         "tests/integration/test_memory_mock_context.py",
         "tests/integration/test_memory_real_context.py",
+
+        # Day6 Agent Unit
+        "tests/agents/test_planner.py",
+        "tests/agents/test_executor.py",
+        "tests/agents/test_orchestrator.py",
+        "tests/agents/test_agent_scope_isolation.py",
+        "tests/agents/test_message_bus.py",
     ],
 
     # 完整链路
@@ -24,6 +35,11 @@ TEST_GROUPS = {
         "tests/integration/test_e2e_pipeline.py",
         "tests/integration/test_full_pipeline.py",
         "tests/integration/test_runtime_tools.py",
+
+        # Day6 Multi-Agent 集成
+        "tests/integration/test_multi_agent_pipeline.py",
+        "tests/agents/test_agent_runtime_isolation.py",
+        "tests/agents/test_agent_message_flow.py",
     ],
 
     # 真实模型测试

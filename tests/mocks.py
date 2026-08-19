@@ -1,7 +1,7 @@
 
 import asyncio
 from typing import List, Dict, Any, Optional
-from mini_harness.core.runtime import LLMClient
+from mini_harness.core.interfaces import LLMClient
 
 # ---------- Mock 实现 ----------
 class MockLLMClient(LLMClient):
