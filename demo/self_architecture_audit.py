@@ -49,13 +49,11 @@ async def list_directory(sandbox: SandboxExecutor, path: str = ".") -> Dict[str,
     列出沙箱内指定目录的树形结构（只读）。
     返回 JSON 字符串，包含目录和文件信息。
     """
-    # 安全检查：路径必须在 workspace 内
-    safe_path = sandbox._safe_path(path)  # 使用私有方法（内部已有实现）
+    safe_path = sandbox._safe_path(path)
     if safe_path is None:
         return {"error": "路径越权或不存在", "tree": []}
 
     def _walk_dir(root: str, rel_path: str = ".") -> List[Dict]:
-        """递归遍历目录，生成树结构"""
         items = []
         full_path = os.path.join(root, rel_path) if rel_path != "." else root
         try:
@@ -87,10 +85,10 @@ async def list_directory(sandbox: SandboxExecutor, path: str = ".") -> Dict[str,
 
 
 def create_readonly_tool_registry(
-        workspace: str, 
-        allowed_prefixes: Optional[List[str]] = None
+        workspace: str,
+        allowed_prefixes: Optional[List[str]] = None,
+        success_list: Optional[List[str]] = None   # 新增参数
 ) -> ToolRegistry:
-    
     """创建只读工具注册表，仅包含 read_file 和 list_directory"""
     sandbox = SandboxExecutor(workspace_root=workspace)
     registry = ToolRegistry(sandbox)
@@ -101,15 +99,13 @@ def create_readonly_tool_registry(
         abs_path = os.path.abspath(os.path.join(workspace, path))
         if not abs_path.startswith(os.path.abspath(workspace)):
             return False
-        rel_path = os.path.relpath(abs_path, workspace).replace('\\', '/')  # 统一为正斜杠
+        rel_path = os.path.relpath(abs_path, workspace).replace('\\', '/')
         for prefix in allowed_prefixes:
             prefix = prefix.replace('\\', '/')
             if rel_path == prefix or rel_path.startswith(prefix + '/'):
                 return True
         return False
 
-    
-    # ---- 新增包装函数 ----
     async def safe_read_file(path: str, timeout: float = 10.0):
         # 检查敏感模式
         for pattern in SENSITIVE_PATTERNS:
@@ -119,8 +115,13 @@ def create_readonly_tool_registry(
         # 白名单检查
         if not _is_allowed_path(path):
             return {"content": "", "size": 0, "error": f"路径不在允许范围内: {path}"}
-        return await sandbox.read_file(path, timeout)
-    
+        result = await sandbox.read_file(path, timeout)
+        # 如果成功，记录路径
+        if isinstance(result, dict) and not result.get("error"):
+            if success_list is not None:
+                success_list.append(path)
+        return result
+
     # 注册 read_file
     registry.register(
         name="read_file",
@@ -129,18 +130,18 @@ def create_readonly_tool_registry(
             "type": "object",
             "properties": {
                 "path": {
-                    "type": "string", 
+                    "type": "string",
                     "description": "文件相对路径（相对于 workspace）"
                 },
                 "timeout": {
-                    "type": "number", 
-                    "description": "超时秒数（默认10）", 
+                    "type": "number",
+                    "description": "超时秒数（默认10）",
                     "default": 10.0
                 },
             },
             "required": ["path"],
         },
-        func=safe_read_file    # 替换原来的 lambda
+        func=safe_read_file
     )
 
     # 注册 list_directory
@@ -151,8 +152,8 @@ def create_readonly_tool_registry(
             "type": "object",
             "properties": {
                 "path": {
-                    "type": "string", 
-                    "description": "目录相对路径（相对于 workspace），默认为 '.'", 
+                    "type": "string",
+                    "description": "目录相对路径（相对于 workspace），默认为 '.'",
                     "default": "."
                 },
             },
@@ -172,16 +173,18 @@ class VerboseOrchestrator(Orchestrator):
     在 Orchestrator 基础上，重写 run_goal 以打印清晰的执行链路。
     """
     def __init__(
-            self, 
-            runtime: HarnessRuntime, 
-            planner: Planner, 
-            scope: Optional[AgentScope] = None
+            self,
+            runtime: HarnessRuntime,
+            planner: Planner,
+            scope: Optional[AgentScope] = None,
+            success_reads: Optional[List[str]] = None   # 新增参数
     ):
         super().__init__(runtime, planner, scope)
-        self.original_goal = None   # 新增
+        self.original_goal = None
+        self.success_reads = success_reads if success_reads is not None else []
 
     async def run_goal(self, goal: str) -> Dict[str, Any]:
-        self.original_goal = goal   # 新增
+        self.original_goal = goal
         print("\n" + "=" * 70)
         print("📌 [Orchestrator] 接收用户目标")
         print(f"   Goal: {goal}")
@@ -189,7 +192,6 @@ class VerboseOrchestrator(Orchestrator):
 
         # 1. 调用 Planner 生成计划
         print("\n🧠 [Planner] 正在拆解目标为可执行步骤...")
-        # 规划时传入 context
         context_msg = """
             【角色】你是一位拥有10年经验的分布式系统架构师，专精于 Agent Runtime 和 AI Infra。
             【项目背景】Mini Harness 是一个用于面试展示的最小 Agent Runtime，从 Day1 到 Day7 逐步实现：
@@ -237,8 +239,8 @@ class VerboseOrchestrator(Orchestrator):
         """
         steps: List[PlanStep] = await self.planner.plan(
             goal=goal,
-            available_capabilities=[],  # 不依赖具体工具描述
-            context=context_msg   # 传入
+            available_capabilities=[],
+            context=context_msg
         )
         print(f"\n✅ [Planner] 生成 {len(steps)} 个步骤：")
         for s in steps:
@@ -247,23 +249,17 @@ class VerboseOrchestrator(Orchestrator):
         # 2. 执行计划（通过 Executor）
         print("\n⚙️ [Executor] 开始调度执行步骤...")
         results: Dict[int, Any] = {}
-
-        # 记录 event_bus 起始长度，以便提取本步骤的事件
         event_bus = self.runtime.event_bus
 
-        # 执行步骤（收集摘要）
         for idx, step in enumerate(steps, 1):
             print(f"\n   ▶️  执行 Step {step.step_id}/{len(steps)}: {step.description}")
-
-            # 记录执行前 bus 长度
             before_len = len(event_bus)
 
             try:
-                # 调用 Executor 执行单个步骤（内部调用 runtime.run）
                 result = await self.executor.execute_single_step(step)
                 results[step.step_id] = result
 
-                # 获取本步骤新增事件（用于展示工具调用）
+                # 展示工具调用
                 new_events = list(event_bus)[before_len:]
                 tool_calls = [
                     e for e in new_events
@@ -297,43 +293,42 @@ class VerboseOrchestrator(Orchestrator):
             else:
                 step_summaries.append(f"步骤{step_id}: {str(result)[:200]}...")
 
+        # 动态构建已读取文件列表
+        if self.success_reads:
+            read_files_str = "\n".join(f"  - `{f}`" for f in self.success_reads)
+        else:
+            read_files_str = "（无成功读取的文件）"
+
         summary_prompt = f"""
             【角色】你是一位拥有10年经验的分布式系统架构师，正在对 Mini Harness 项目进行严格的架构审计。
 
-            **重要事实：你只成功读取了以下文件：**
+            **重要事实：你已成功读取以下文件（基于实际工具调用结果）：**
             {read_files_str}
 
-            因此，你的分析**必须严格基于** `demo/self_architecture_audit.py` 
-            的内容以及目录结构信息。**严禁**臆测其他文件的内容或风险。
-            如果某风险无法从已读取文件中找到证据，则不要写入报告。
-                        
+            因此，你的分析**必须严格基于**这些实际读取的文件内容。如果某风险无法从已读取文件中找到证据，则不要写入报告。
+
             请基于以下各步骤的审计结果，生成最终的架构审计报告。
             报告必须包含：
             1. 执行摘要（150字以内）
             2. 架构优点（最多5条，简明）
             3. 关键风险清单（至少5条，按严重度分级：高危/中危/低危）
             - 每条必须包含：风险描述、证据（文件路径+行号）、影响、建议修复方案
-            4. 性能优化建议（至少3条，指出具体瓶颈和优化方向，如内存池化、零拷贝、子进程强杀等）
+            4. 性能优化建议（至少3条，指出具体瓶颈和优化方向）
             5. 生产就绪度差距分析（列出至少4项缺失的生产级能力，并说明为何重要）
             6. 总结论
 
             总字数不超过1500字。禁止重复各步骤的原始内容，只输出提炼后的关键发现。
-            每个风险证据路径必须是你实际读取过的文件路径，禁止编造。
+            每个风险证据路径必须来自上述成功读取的文件列表，禁止编造。
             如果某个风险没有实际读取到对应文件，则不要写入报告。
-            报告中的所有文件路径必须与工具调用记录一致。
-            如果多次读取文件都返回“路径不在允许范围内”，请先使用 list_directory 查看当前允许的目录结构，再决定读取路径。
-            不要尝试读取 tests/、.env、pyproject.toml、.git/ 等被禁止的路径。
 
             原始目标：{goal}
             各步骤结果摘要：
             {chr(10).join(step_summaries)}
             """
         try:
-            # 使用 runtime.llm 直接生成
             llm_response = await self.runtime.llm.generate([{"role": "user", "content": summary_prompt}])
             final_report = llm_response.get("content", "报告生成失败")
         except Exception as e:
-            # 降级：简单拼接摘要
             final_report = f"报告生成失败（降级拼接）：\n" + "\n".join(step_summaries)
 
         print("\n✅ [Orchestrator] 精简报告生成完成。")
@@ -351,7 +346,6 @@ class VerboseOrchestrator(Orchestrator):
 # ============================================================
 
 def export_trace(event_bus: deque, trace_dir: str = "traces") -> str:
-    """将事件总线导出为 JSON 文件，返回文件路径"""
     os.makedirs(trace_dir, exist_ok=True)
     timestamp = int(time.time() * 1000)
     trace_path = os.path.join(trace_dir, f"trace_{timestamp}.json")
@@ -369,28 +363,23 @@ def export_trace(event_bus: deque, trace_dir: str = "traces") -> str:
 
 
 def generate_trace_summary(trace_path: str, goal: Optional[str] = None) -> str:
-    """从 trace JSON 生成 Execution Timeline + Statistics 摘要"""
     with open(trace_path, "r", encoding="utf-8") as f:
         events = json.load(f)
 
-    # 优先使用传入 goal
-    user_input = goal 
-    # 如果未传入，尝试从事件中提取
+    user_input = goal
     if not user_input:
         for e in events:
             if e.get("type") == "user_input":
                 user_input = e.get("data", "未知")
                 break
 
-    # 确保有默认值
     if not user_input:
         user_input = "未知"
-    # 按时间排序（已经有序）
+
     timeline = []
     tool_call_count = 0
     llm_request_count = 0
     error_count = 0
-
 
     for e in events:
         typ = e["type"]
@@ -414,12 +403,11 @@ def generate_trace_summary(trace_path: str, goal: Optional[str] = None) -> str:
         elif typ == "finish":
             timeline.append(f"  - ✅ 任务完成 ({e['timestamp']})")
 
-    # 构建摘要文本
     summary_lines = [
         "=" * 60,
         "📜 Trace Summary (Execution Timeline + Statistics)",
         "=" * 60,
-        f"用户目标: {user_input or '未知'}",
+        f"用户目标: {user_input}",
         "",
         "⏱️ 执行时间线:",
     ]
@@ -438,31 +426,26 @@ def generate_trace_summary(trace_path: str, goal: Optional[str] = None) -> str:
 # ============================================================
 
 async def main():
-    # 0. 设置工作目录为项目根（便于读取项目文件）
     project_root = Path(__file__).parent.parent
-    workspace = str(project_root)  # 审计整个项目
+    workspace = str(project_root)
 
     # 1. 构建只读工具注册表
-    allowed_scan_paths = ["src/mini_harness", "mini_harness", "demo"]
+    allowed_scan_paths = ["src/mini_harness", "demo"]
+    successful_reads = []   # 收集成功读取的文件
     tool_registry = create_readonly_tool_registry(
-                        workspace, 
-                        allowed_prefixes=allowed_scan_paths
-                    )
-    
-    # 2. 构建 LLM 客户端（使用真实 DeepSeek API）
-    llm_client = RealLLMClient()  # 从环境变量读取 DEEPSEEK_API_KEY
+        workspace,
+        allowed_prefixes=allowed_scan_paths,
+        success_list=successful_reads   # 传入
+    )
 
-    # 3. 构建事件总线（共享 deque）
+    llm_client = RealLLMClient()
     event_bus = deque(maxlen=10000)
-
-    # 4. 构建 Context Manager（注入 event_bus）
     context_manager = ContextManager(
         llm_client=llm_client,
         max_tokens=8000,
         event_bus=event_bus
     )
 
-    # 5. 构建 Runtime 配置
     config = RuntimeConfig(
         workspace=workspace,
         max_iterations=10,
@@ -470,31 +453,27 @@ async def main():
         tool_timeout=30.0,
         max_context_tokens=8000,
         event_bus_maxlen=10000,
-        enable_mcp=False,  # 不使用 MCP
+        enable_mcp=False,
     )
 
-    # 6. 构建 Runtime（传入共享 event_bus 和 context_manager）
     runtime = HarnessRuntime(
         config=config,
         llm_client=llm_client,
         tool_registry=tool_registry,
         context_manager=context_manager,
-        scope=None,  # 不需要 AgentScope
+        scope=None,
     )
-    # 让 runtime 使用同一个 event_bus（覆盖其内部的 deque）
-    runtime.event_bus = event_bus  # 确保所有事件记录到同一个 bus
+    runtime.event_bus = event_bus
 
-    # 7. 构建 Planner（使用 LLM 辅助规划，也可纯规则）
     planner = Planner(llm_client=llm_client)
 
-    # 8. 构建 VerboseOrchestrator
     orchestrator = VerboseOrchestrator(
         runtime=runtime,
         planner=planner,
-        scope=None
+        scope=None,
+        success_reads=successful_reads   # 传入
     )
 
-    # 9. 定义审计目标
     goal = """
         请作为架构审计 Agent，对 Mini Harness 项目执行一次只读的架构审计：
         1. 扫描项目结构，识别核心模块
@@ -505,26 +484,21 @@ async def main():
         约束：禁止修改任何文件，禁止执行写操作或 shell 命令。
         """.strip()
 
-    # 10. 执行审计
     print("\n🚀 开始执行 Mini Harness 自我架构审计（只读模式）...\n")
     result = await orchestrator.run_goal(goal)
 
-    # 11. 导出完整 Trace
     trace_path = export_trace(event_bus, "traces")
     print(f"\n📁 完整 Trace 已导出至: {trace_path}")
 
-    # 12. 生成并打印 Trace Summary
     trace_summary = generate_trace_summary(trace_path, goal=orchestrator.original_goal)
     print("\n" + trace_summary)
 
-    # 13. 保存最终报告
     report_content = result["summary"]
     report_path = "architecture_audit_report.md"
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_content)
     print(f"\n📄 最终审计报告已保存至: {report_path}")
 
-    # 14. 打印最终报告（可选）
     print("\n" + "=" * 60)
     print("📄 最终审计报告预览（前 500 字符）:")
     print(report_content[:500] + ("..." if len(report_content) > 500 else ""))
