@@ -88,13 +88,7 @@ class SandboxExecutor:
             raise RuntimeError(f"命令 '{command}' 执行失败 \
                                (code {proc.returncode}): {stderr_text}")
     
-        # execution_time = time.perf_counter() - start
         return {
-            # "stdout": stdout.decode(encoding, errors='replace'),
-            # "stderr": stderr.decode(encoding, errors='replace'),
-            # "return_code": returncode,
-            # "execution_time": execution_time,
-            # "timed_out": timed_out,
             "stdout": stdout_text,
             "stderr": stderr_text,
             "return_code": proc.returncode,

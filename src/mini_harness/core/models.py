@@ -22,7 +22,7 @@ class Event:
     type: EventType
     timestamp: float = field(default_factory=time.time)
     data: Any = None                  # 具体内容：str / dict / 工具调用结果
-    trace_id: str = ""               # 链路追踪ID（Day 9 会用）
+    trace_id: str = ""                # 链路追踪ID
 
 # ---------- Agent 状态机（State Machine） ----------
 class AgentStatus(Enum):
