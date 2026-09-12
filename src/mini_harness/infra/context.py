@@ -2,8 +2,7 @@ from dataclasses import dataclass, field
 from mini_harness.core.models import Event, EventType
 from typing import List, Dict, Optional, Any
 import asyncio
-import time
-import re
+import json
 import tiktoken
 
 # ============================================================
@@ -38,17 +37,39 @@ class TokenEstimator:
     @classmethod
     def estimate(cls, text: str) -> int:
 
-        tokenizer = cls._get_tokenizer()
+        if text is None:
+            return 0
 
+        tokenizer = cls._get_tokenizer()
         if tokenizer:
             try:
-                return len(
-                    tokenizer.encode(text)
-                )
+                return len(tokenizer.encode(text))
             except Exception:
                 pass
         # fallback
         return len(text)//3
+
+    @classmethod
+    def estimate_message(
+        cls,
+        message: Dict[str, Any],
+    ) -> int:
+        """
+        按完整 message 估算 token。
+
+        Tool Calling message 即使 content=None，
+        tool_calls / tool_call_id / arguments 等字段
+        仍然属于真实模型上下文。
+        """
+
+        serialized = json.dumps(
+            message,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+
+        return cls.estimate(serialized)
     
 # ============================================================
 # 2. 上下文窗口
@@ -62,11 +83,38 @@ class ContextWindow:
     messages: List[Dict[str, Any]] = field(default_factory=list)
     total_tokens: int = 0
 
-    def add_message(self, role: str, content: str) -> None:
-        """添加一条消息，更新 token 计数"""
-        tokens = TokenEstimator.estimate(content)
-        self.messages.append({"role": role, "content": content})
+    def add_message_dict(
+        self,
+        message: Dict[str, Any],
+        *,
+        prepend: bool = False,
+    ) -> None:
+        """
+        ContextWindow 的统一消息入口。
+        """
+        tokens = (TokenEstimator.estimate_message(message))
+        if prepend:
+            self.messages.insert(0, message)
+        else:
+            self.messages.append(message)
         self.total_tokens += tokens
+
+
+    def add_message(self, role: str, content: str) -> None:
+        """普通文本消息兼容入口"""
+        self.add_message_dict({"role": role, "content": content})
+
+    def recalculate_total_tokens(self) -> int:
+        """
+        根据当前完整 messages 重新计算 token 总量。
+        用于 compression / trimming 等批量重建窗口后，
+        防止 total_tokens 与真实 messages 状态失去同步。
+        """
+        self.total_tokens = sum(
+            TokenEstimator.estimate_message(message) 
+            for message in self.messages
+        )
+        return self.total_tokens
     
     def get_current_tokens(self) -> int:
         return self.total_tokens
@@ -75,7 +123,7 @@ class ContextWindow:
         """判断是否超过上下文限制（含预留）"""
         return self.total_tokens > (self.max_tokens - self.reserve_tokens)
     
-    def get_messages_for_llm(self) -> List[Dict[str, str]]:
+    def get_messages_for_llm(self) -> List[Dict[str, Any]]:
         """
         返回当前消息列表。
         如果超限，自动裁剪最早的非 system 消息，直到低于阈值。
@@ -91,11 +139,14 @@ class ContextWindow:
         # 从前往后删除非 system 消息，直到总 token 数低于阈值
         target_tokens = self.max_tokens - self.reserve_tokens
         kept_non_system = []
-        kept_tokens = sum(TokenEstimator.estimate(m["content"]) for m in system_msgs)
+        kept_tokens = sum(
+            TokenEstimator.estimate_message(m) 
+            for m in system_msgs
+        )
 
          # 从后往前累积保留（保留最新消息）
         for msg in reversed(non_system):
-            msg_tokens = TokenEstimator.estimate(msg["content"])
+            msg_tokens = TokenEstimator.estimate_message(msg)
             if kept_tokens + msg_tokens > target_tokens:
                 # 如果加上这条消息会超限，则停止（不保留这条及之前的）
                 break
@@ -107,7 +158,7 @@ class ContextWindow:
 
         # 更新内部状态
         self.messages = system_msgs + kept_non_system
-        self.total_tokens = kept_tokens
+        self.recalculate_total_tokens()
         return self.messages.copy()
     
 # ============================================================
@@ -149,7 +200,7 @@ class ContextManager:
             self._trigger_async_compression()
 
     def add_tool_result(self, tool_call_id: str, result: str) -> None:
-        self.window.messages.append(
+        self.window.add_message_dict(
             {
                 "role":"tool",
                 "tool_call_id":tool_call_id,
@@ -161,9 +212,18 @@ class ContextManager:
             self._trigger_async_compression()
 
     def add_system_message(self, content: str) -> None:
-        """添加 system 消息（不会被裁剪）"""
-        self.window.messages.insert(0, {"role": "system", "content": content})
-        self.window.total_tokens += TokenEstimator.estimate(content)
+        """
+        添加 system 消息（不会被裁剪）
+        保持原来的“插入窗口头部”语义，但统一通过 ContextWindow 维护 token。
+        
+        """
+        self.window.add_message_dict(
+            {
+                "role": "system",
+                "content": content,
+            },
+            prepend=True,
+        )
         # TODO: 接入 event_bus 记录此事件
 
     def _trigger_async_compression(self) -> None:
@@ -171,13 +231,17 @@ class ContextManager:
         if self._background_task is None or self._background_task.done():
             self._background_task = asyncio.create_task(self._compress_background())
             # TODO: 接入 event_bus 记录压缩触发事件（包含当前 token 数、消息数量）
+
     def add_assistant_tool_calls(self,tool_calls):
-        self.window.messages.append(
+        self.window.add_message_dict(
             {
                 "role":"assistant",
+                "content": None,
                 "tool_calls":tool_calls
             }
         )
+        if self.window.is_overflow():
+            self._trigger_async_compression()
 
     async def _compress_background(self) -> None:
         """
@@ -187,9 +251,8 @@ class ContextManager:
         3. 压缩完成后插入 summary，裁剪旧消息。
         """
 
-        print(
-            "DEBUG compress background START"
-        )
+        print("DEBUG compress background START")
+        
         async with self._compression_lock:
             # 防止短时间内多次触发
             if self._compression_triggered:
@@ -288,9 +351,7 @@ class ContextManager:
 
                 # 6. 重新计算 token
                 self.window.messages = new_messages
-                self.window.total_tokens = sum(
-                    TokenEstimator.estimate(m["content"]) for m in new_messages
-                )
+                self.window.recalculate_total_tokens()
 
                 # 压缩完成（可选再记录一次 SUCCESS）
                 if self.event_bus is not None:
@@ -310,7 +371,10 @@ class ContextManager:
                 self._compression_triggered = False
 
     def get_context_for_llm(self) -> List[Dict[str, str]]:
-        """获取最终发给 LLM 的消息列表（包含 summary + 最近消息）"""
+        """
+        Runtime 调用此接口，自动判断是否裁剪上下文；
+        获取最终发给 LLM 的消息列表（包含 summary + 最近消息）
+        """
         # 同步裁剪（如果超限）
         return self.window.get_messages_for_llm()
     
