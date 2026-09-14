@@ -243,6 +243,29 @@ class ContextManager:
         if self.window.is_overflow():
             self._trigger_async_compression()
 
+    def _is_history_summary(
+        self,
+        message: Dict[str, Any],
+    ) -> bool:
+        """
+        判断一条 system message 是否为 rolling historical summary。
+        P0-3 当前采用最小实现：
+        通过 [历史摘要] 前缀区分历史摘要与 pinned system instruction。
+
+        注意：
+        historical summary 虽然使用 role=system 发送给 LLM，
+        但生命周期与真正的 pinned system instruction 不同：
+        - pinned system: 长期保留
+        - history summary: 每轮 compression 滚动替换
+        """
+
+        content = message.get("content")
+
+        return (
+            message.get("role") == "system"
+            and isinstance(content, str)
+            and content.startswith("[历史摘要]")
+        )
     
     def _build_message_blocks(
         self,
@@ -351,18 +374,25 @@ class ContextManager:
         """
         后台压缩历史 Context。
 
-        P0-2 规则：
-        1. system messages 不参与本轮普通历史压缩；
-        2. 非 system messages 先组织成 Message Blocks；
-        3. 最近 3 个 block 保留原文；
-        4. 更早的 blocks 才进入 summary；
-        5. compression boundary 不能拆开
+        P0-2：
+        1. 非 system messages 按 Message Block 划分；
+        2. 最近 3 个 block 保留原文；
+        3. 更早 blocks 进入 summary；
+        4. compression boundary 不拆分
         assistant(tool_calls) + tool result(s)。
 
-        注意：
-        当前只解决 P0-2 Compression Protocol Safety。
-        summary 生命周期将在 P0-3 单独处理。
+        P0-3：
+        1. pinned system instruction 长期保留；
+        2. historical summary 最多只保留一个；
+        3. 后续 compression 使用：
+            old summary
+            +
+            newly evicted raw history
+            ->
+            new summary
+        4. old summary 被 new summary 替换，不累积。
         """
+
         print("DEBUG compress background START")
         async with self._compression_lock:
             # 防止短时间内多次触发
@@ -390,21 +420,52 @@ class ContextManager:
                     )
 
                 # ==================================================
-                # 2. system / non-system 分区
+                # 2. Context 生命周期分区
                 #
-                # 当前 P0-2：
-                # system 不进入普通历史 compression。
+                # P0-3：
+                #
+                # system message 不再被视为同一种生命周期。
+                #
+                # 1. pinned_system_msgs
+                #       真正的 system instruction，长期保留；
+                #
+                # 2. existing_history_summary
+                #       上一轮 rolling summary，
+                #       本轮参与新 summary 生成，但不会原样累积；
+                #
+                # 3. non_system_msgs
+                #       普通对话历史，继续交给 P0-2 Message Block。
                 # ==================================================
-                system_msgs = [
+                pinned_system_msgs = [
                     message
                     for message in self.window.messages
-                    if message.get("role") == "system"
+                    if (
+                        message.get("role") == "system"
+                        and not self._is_history_summary(message)
+                    )
+                ]
+                history_summary_msgs = [
+                    message
+                    for message in self.window.messages
+                    if self._is_history_summary(message)
                 ]
                 non_system_msgs = [
                     message
                     for message in self.window.messages
                     if message.get("role") != "system"
                 ]
+
+                # P0-3 invariant：
+                # 新代码正常运行时最多只会存在一个 historical summary。
+                #
+                # 如果当前窗口已有 summary，则取最新一条作为 rolling source。
+                # 本层不扩展为通用 Context repair / Protocol Guard。
+                existing_history_summary = (
+                    history_summary_msgs[-1]
+                    if history_summary_msgs
+                    else None
+                )
+
                 if not non_system_msgs:
                     return
 
@@ -413,14 +474,10 @@ class ContextManager:
                 # ==================================================
                 blocks = self._build_message_blocks(non_system_msgs)
 
-                # 当前旧实现保留最近 3 条 message。
-                # P0-2 后语义升级为：
-                #     保留最近 3 个 Message Block
-                # 从而保证 Tool Calling block 不被切开。
+                #  保留最近 3 个 Message Block
                 keep_recent_blocks = 3
 
-                # 没有“旧历史”可以压缩时，
-                # 不调用 summarizer，也不破坏近期原始消息。
+                # 没有“旧历史”可以压缩时，不调用 summarizer，也不破坏近期原始消息。
                 if len(blocks) <= keep_recent_blocks:
                     return
 
@@ -447,12 +504,32 @@ class ContextManager:
                     return
 
                 # ==================================================
-                # 5. 构造 summarizer 输入
+                # 5. 构造 rolling summary 输入
                 #
-                # 注意：
-                # 这里只总结 old history，
-                # recent raw messages 不再重复进入 summary。
+                # P0-3：
+                #
+                # 第一次 compression：
+                #     newly evicted raw history
+                #           ↓
+                #       new summary
+                #
+                # 后续 compression：
+                #     old summary
+                #     +
+                #     newly evicted raw history
+                #           ↓
+                #       new summary
+                #
+                # recent raw messages 仍然不进入 summary，
+                # 继续遵守 P0-2 old/recent partition。
                 # ==================================================
+
+                summary_source: List[Dict[str, Any]] = []
+                
+                if existing_history_summary is not None:
+                    summary_source.append(existing_history_summary)
+
+                summary_source.extend(history_to_summarize)
                 summary_prompt = (
                     "请用一段话（不超过50字）"
                     "总结以下对话的核心内容："
@@ -464,13 +541,11 @@ class ContextManager:
                     },
                     {
                         "role": "user",
-                        "content": str(
-                            history_to_summarize
-                        ),
+                        "content": str(summary_source),
                     },
                 ]
-                try:
 
+                try:
                     # ==============================================
                     # 6. LLM summary request
                     # ==============================================
@@ -550,7 +625,7 @@ class ContextManager:
                 # +
                 # recent raw blocks
                 # ==================================================
-                new_messages = system_msgs.copy()
+                new_messages = pinned_system_msgs.copy()
                 if self.summary:
                     new_messages.append(
                         {
