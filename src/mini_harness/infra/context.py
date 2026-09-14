@@ -243,127 +243,343 @@ class ContextManager:
         if self.window.is_overflow():
             self._trigger_async_compression()
 
+    
+    def _build_message_blocks(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> List[List[Dict[str, Any]]]:
+        """
+        将非 system messages 按协议关系组织成不可拆分的 Message Block。
+
+        普通消息：
+            [user]
+            [assistant]
+
+        Tool Calling：
+            [
+                assistant(tool_calls),
+                tool,
+                tool,
+                ...
+            ]
+
+        目的：
+        compression 只能在 block 之间切分，
+        不能把 assistant(tool_calls) 与对应 tool result 拆开。
+
+        注意：
+        本方法只维护已有合法消息的原子性，
+        不负责修复已经损坏的 Context，
+        因此它不是 Protocol Guard。
+        """
+        blocks: List[List[Dict[str, Any]]] = []
+
+        index = 0
+
+        while index < len(messages):
+            message = messages[index]
+
+            # --------------------------------------------------
+            # Tool Calling block:
+            #
+            # assistant(tool_calls)
+            # tool
+            # tool
+            # ...
+            # --------------------------------------------------
+            if (
+                message.get("role") == "assistant"
+                and message.get("tool_calls")
+            ):
+                block = [message]
+
+                tool_call_ids = {
+                    tool_call.get("id")
+                    for tool_call in message.get("tool_calls", [])
+                    if tool_call.get("id") is not None
+                }
+
+                next_index = index + 1
+
+                while next_index < len(messages):
+                    next_message = messages[next_index]
+
+                    if next_message.get("role") != "tool":
+                        break
+
+                    if (
+                        next_message.get("tool_call_id")
+                        not in tool_call_ids
+                    ):
+                        break
+
+                    block.append(next_message)
+                    next_index += 1
+
+                blocks.append(block)
+                index = next_index
+                continue
+
+            # --------------------------------------------------
+            # 普通 message 自己构成一个 block。
+            #
+            # 如果这里出现 orphan tool，
+            # 不在本层偷偷修复或删除：
+            # P0-2 只保证 compression 不制造新的协议破坏。
+            # --------------------------------------------------
+            blocks.append([message])
+            index += 1
+
+        return blocks
+
+
+    def _flatten_message_blocks(
+        self,
+        blocks: List[List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        """
+        将 Message Blocks 恢复成标准 messages 列表。
+        """
+        return [
+            message
+            for block in blocks
+            for message in block
+        ]
+
+
     async def _compress_background(self) -> None:
         """
-        强化点：
-        1. 后台异步执行，不阻塞主循环。
-        2. 使用 asyncio.Lock 防止并发压缩。
-        3. 压缩完成后插入 summary，裁剪旧消息。
-        """
+        后台压缩历史 Context。
 
+        P0-2 规则：
+        1. system messages 不参与本轮普通历史压缩；
+        2. 非 system messages 先组织成 Message Blocks；
+        3. 最近 3 个 block 保留原文；
+        4. 更早的 blocks 才进入 summary；
+        5. compression boundary 不能拆开
+        assistant(tool_calls) + tool result(s)。
+
+        注意：
+        当前只解决 P0-2 Compression Protocol Safety。
+        summary 生命周期将在 P0-3 单独处理。
+        """
         print("DEBUG compress background START")
-        
         async with self._compression_lock:
             # 防止短时间内多次触发
             if self._compression_triggered:
                 return
             self._compression_triggered = True
-
             try:
-                # ---- 1. 压缩开始 ----
+                # ==================================================
+                # 1. 记录 compression 开始
+                # ==================================================
                 if self.event_bus is not None:
                     self.event_bus.append(
                         Event(
                             type=EventType.LLM_REQUEST,
                             data={
                                 "action": "compress_start",
-                                "msg_count": len(self.window.messages),
-                                "total_tokens": self.window.total_tokens
-                            }
+                                "msg_count": len(
+                                    self.window.messages
+                                ),
+                                "total_tokens": (
+                                    self.window.total_tokens
+                                ),
+                            },
                         )
                     )
 
-                # 1. 获取需要压缩的消息（排除 system）
-                messages_to_summarize = [
-                    m for m in self.window.messages
-                    if m["role"] != "system"
+                # ==================================================
+                # 2. system / non-system 分区
+                #
+                # 当前 P0-2：
+                # system 不进入普通历史 compression。
+                # ==================================================
+                system_msgs = [
+                    message
+                    for message in self.window.messages
+                    if message.get("role") == "system"
                 ]
-                if not messages_to_summarize:
+                non_system_msgs = [
+                    message
+                    for message in self.window.messages
+                    if message.get("role") != "system"
+                ]
+                if not non_system_msgs:
                     return
-                
-                # 2. 取最近 5 条非 system 消息进行总结
-                recent_5 = messages_to_summarize[-5:]
-                summary_prompt = "请用一段话（不超过50字）总结以下对话的核心内容："
-                # 构造 LLM 输入
-                summary_messages = [
-                    {"role": "system", "content": summary_prompt},
-                    {"role": "user", "content": str(recent_5)}   # 简单拼接
-                ]
 
+                # ==================================================
+                # 3. 非 system messages 构造成 Message Blocks
+                # ==================================================
+                blocks = self._build_message_blocks(non_system_msgs)
+
+                # 当前旧实现保留最近 3 条 message。
+                # P0-2 后语义升级为：
+                #     保留最近 3 个 Message Block
+                # 从而保证 Tool Calling block 不被切开。
+                keep_recent_blocks = 3
+
+                # 没有“旧历史”可以压缩时，
+                # 不调用 summarizer，也不破坏近期原始消息。
+                if len(blocks) <= keep_recent_blocks:
+                    return
+
+                history_blocks = (blocks[:-keep_recent_blocks])
+                recent_blocks = (blocks[-keep_recent_blocks:])
+
+                # ==================================================
+                # 4. flatten：
+                #
+                # old history -> summary
+                # recent       -> raw
+                # ==================================================
+                history_to_summarize = (
+                    self._flatten_message_blocks(
+                        history_blocks
+                    )
+                )
+                kept_messages = (
+                    self._flatten_message_blocks(
+                        recent_blocks
+                    )
+                )
+                if not history_to_summarize:
+                    return
+
+                # ==================================================
+                # 5. 构造 summarizer 输入
+                #
+                # 注意：
+                # 这里只总结 old history，
+                # recent raw messages 不再重复进入 summary。
+                # ==================================================
+                summary_prompt = (
+                    "请用一段话（不超过50字）"
+                    "总结以下对话的核心内容："
+                )
+                summary_messages = [
+                    {
+                        "role": "system",
+                        "content": summary_prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": str(
+                            history_to_summarize
+                        ),
+                    },
+                ]
                 try:
-                    # ---- 2. LLM 请求 ----
+
+                    # ==============================================
+                    # 6. LLM summary request
+                    # ==============================================
                     if self.event_bus is not None:
                         self.event_bus.append(
                             Event(
                                 type=EventType.LLM_REQUEST,
-                                data={"action": "llm_summarize"}
+                                data={
+                                    "action": "llm_summarize"
+                                },
                             )
                         )
-                    
                     print(
                         "DEBUG compression messages:",
-                        summary_messages
+                        summary_messages,
                     )
                     response = await self.llm.generate(summary_messages)
-
                     print(
                         "DEBUG compression response:",
-                        response
+                        response,
                     )
-
-                    # ---- 3. LLM 成功 ----
                     if self.event_bus is not None:
                         self.event_bus.append(
                             Event(
                                 type=EventType.SUCCESS,
                                 data={
-                                    "action": "llm_summarize",
-                                    "summary": response.get("content", "")
-                                }
+                                    "action": (
+                                        "llm_summarize"
+                                    ),
+                                    "summary": response.get(
+                                        "content",
+                                        "",
+                                    ),
+                                },
                             )
                         )
-
-                    summary = response.get("content", "对话摘要生成失败")
+                    summary = response.get(
+                        "content",
+                        "对话摘要生成失败",
+                    )
                 except Exception as e:
-                    # ---- 4. 压缩失败 ----
+
+                    # ==============================================
+                    # 7. 保留当前已有失败行为
+                    #
+                    # 本轮不扩大到 compression failure policy。
+                    # ==============================================
                     if self.event_bus is not None:
                         self.event_bus.append(
                             Event(
                                 type=EventType.ERROR,
-                                data={"action": "compress", "exception": str(e)}
+                                data={
+                                    "action": "compress",
+                                    "exception": str(e),
+                                },
                             )
                         )
                     summary = f"[压缩失败: {e}]"
 
-                # 3. 更新 summary（保留最近一次）
+                # ==================================================
+                # 8. 更新当前 summary
+                # 注意：
+                # P0-3 才处理：
+                # old summary + newly evicted history
+                #                  ↓
+                #             one new summary
+                #
+                # 本轮暂不提前修改 summary lifecycle。
+                # ==================================================
                 self.summary = summary
 
-                # 4. 裁剪消息：只保留 system + 最近 3 条非 system
-                system_msgs = [m for m in self.window.messages if m["role"] == "system"]
-                non_system = [m for m in self.window.messages if m["role"] != "system"]
-                kept = non_system[-3:]  # 保留最近 3 条
-
-                # 5. 重建窗口：system + summary + 最近消息
+                # ==================================================
+                # 9. 重建 Context
+                # system
+                # +
+                # summary
+                # +
+                # recent raw blocks
+                # ==================================================
                 new_messages = system_msgs.copy()
                 if self.summary:
-                    new_messages.append({"role": "system", "content": f"[历史摘要] {self.summary}"})
-                new_messages.extend(kept)
+                    new_messages.append(
+                        {
+                            "role": "system",
+                            "content": (
+                                f"[历史摘要] "
+                                f"{self.summary}"
+                            ),
+                        }
+                    )
+                new_messages.extend(kept_messages)
 
-                # 6. 重新计算 token
+                # ==================================================
+                # 10. P0-1 invariant：
+                # 完整重新计算 token。
+                # ==================================================
                 self.window.messages = new_messages
                 self.window.recalculate_total_tokens()
-
-                # 压缩完成（可选再记录一次 SUCCESS）
                 if self.event_bus is not None:
-
                     print("DEBUG compress DONE")
                     self.event_bus.append(
                         Event(
                             type=EventType.SUCCESS,
                             data={
-                                "action": "compress_done", 
-                                "new_tokens": self.window.total_tokens
-                            }
+                                "action": "compress_done",
+                                "new_tokens": (
+                                    self.window.total_tokens
+                                ),
+                            },
                         )
                     )
             finally:
