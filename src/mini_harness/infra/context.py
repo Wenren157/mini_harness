@@ -70,9 +70,116 @@ class TokenEstimator:
         )
 
         return cls.estimate(serialized)
-    
+
+
+
 # ============================================================
-# 2. 上下文窗口
+# 2. Message Block Helpers
+# ============================================================
+def _build_message_blocks(
+    messages: List[Dict[str, Any]],
+) -> List[List[Dict[str, Any]]]:
+    """
+    将 messages 按协议关系组织成不可拆分的 Message Block。
+    普通消息：
+        [user]
+        [assistant]
+
+    Tool Calling：
+        [
+            assistant(tool_calls),
+            tool,
+            tool,
+            ...
+        ]
+
+    目的：
+    所有 Context boundary operation 都只能在 block 之间切分，
+    不能把 assistant(tool_calls) 与对应 tool result(s) 拆开。
+
+    当前使用者：
+    1. ContextManager compression；
+    2. ContextWindow hard trim（P1 后续步骤接入）。
+
+    注意：
+    本 helper 只维护已有合法消息的原子性，
+    不负责修复已经损坏的 Context，
+    因此它不是 Protocol Guard。
+    """
+    blocks: List[List[Dict[str, Any]]] = []
+    index = 0
+
+    while index < len(messages):
+        message = messages[index]
+
+        # --------------------------------------------------
+        # Tool Calling block:
+        #
+        # assistant(tool_calls)
+        # tool
+        # tool
+        # ...
+        # --------------------------------------------------
+        if (
+            message.get("role") == "assistant"
+            and message.get("tool_calls")
+        ):
+            block = [message]
+
+            tool_call_ids = {
+                tool_call.get("id")
+                for tool_call in message.get("tool_calls", [])
+                if tool_call.get("id") is not None
+            }
+
+            next_index = index + 1
+
+            while next_index < len(messages):
+                next_message = messages[next_index]
+
+                if next_message.get("role") != "tool":
+                    break
+
+                if (
+                    next_message.get("tool_call_id")
+                    not in tool_call_ids
+                ):
+                    break
+
+                block.append(next_message)
+                next_index += 1
+
+            blocks.append(block)
+            index = next_index
+            continue
+
+        # --------------------------------------------------
+        # 普通 message 自己构成一个 block。
+        #
+        # 如果这里出现 orphan tool，
+        # 不在本层偷偷修复或删除。
+        # Message Block 负责 boundary atomicity，
+        # 不负责 Protocol Guard。
+        # --------------------------------------------------
+        blocks.append([message])
+        index += 1
+
+    return blocks
+
+def _flatten_message_blocks(
+    blocks: List[List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """
+    将 Message Blocks 恢复成标准 messages 列表。
+    """
+    return [
+        message
+        for block in blocks
+        for message in block
+    ]
+
+# ============================================================
+# 3. 上下文窗口
 # ============================================================
 @dataclass
 class ContextWindow:
@@ -80,8 +187,23 @@ class ContextWindow:
 
     max_tokens: int = 8000              # 模型上下文上限
     reserve_tokens: int = 1000          # 为 system/instruction 预留
+    compression_headroom: int = 1000
+
     messages: List[Dict[str, Any]] = field(default_factory=list)
     total_tokens: int = 0
+
+    @property
+    def hard_limit(self) -> int:
+        """真正允许 Context 使用的最大 token 预算。"""
+        return self.max_tokens - self.reserve_tokens
+
+    @property
+    def soft_limit(self) -> int:
+        """
+        异步 compression 的提前触发阈值。
+        在真正进入 hard overflow 前，预留 compression_headroom 作为压缩缓冲区。
+        """
+        return max(0, self.hard_limit - self.compression_headroom)
 
     def add_message_dict(
         self,
@@ -98,7 +220,6 @@ class ContextWindow:
         else:
             self.messages.append(message)
         self.total_tokens += tokens
-
 
     def add_message(self, role: str, content: str) -> None:
         """普通文本消息兼容入口"""
@@ -118,51 +239,102 @@ class ContextWindow:
     
     def get_current_tokens(self) -> int:
         return self.total_tokens
+
+    def should_compress(self) -> bool:
+        """
+        判断是否达到异步 compression 的 Soft Threshold。
+        Soft Threshold 只负责提前触发 compression，不代表 Context 已经发生 hard overflow。
+        """
+        return self.total_tokens > self.soft_limit
     
     def is_overflow(self) -> bool:
-        """判断是否超过上下文限制（含预留）"""
-        return self.total_tokens > (self.max_tokens - self.reserve_tokens)
-    
+        """
+        判断是否真正超过 Hard Overflow Threshold。
+        Hard Overflow 表示 Context 已经进入必须同步裁剪的危险区。
+        """
+        return self.total_tokens > self.hard_limit
+        
     def get_messages_for_llm(self) -> List[Dict[str, Any]]:
         """
         返回当前消息列表。
-        如果超限，自动裁剪最早的非 system 消息，直到低于阈值。
+
+        如果发生 Hard Overflow：
+        1. system messages 始终保留；
+        2. non-system messages 按 Message Block 划分；
+        3. 从最近的 block 开始，在 hard token budget 内尽可能保留；
+        4. Hard Trim 只能在 block 边界切分；
+        5. 不允许拆开 assistant(tool_calls) + tool result(s)。
+
         裁剪会修改内部状态（messages 和 total_tokens）。
         """
         if not self.is_overflow():
             return self.messages.copy()
 
-        # 保留 system 消息
-        system_msgs = [m for m in self.messages if m["role"] == "system"]
-        non_system = [m for m in self.messages if m["role"] != "system"]
+        # ========================================================
+        # 1. system messages 始终保留
+        # ========================================================
+        system_msgs = [
+            message
+            for message in self.messages
+            if message.get("role") == "system"
+        ]
+        non_system_msgs = [
+            message
+            for message in self.messages
+            if message.get("role") != "system"
+        ]
 
-        # 从前往后删除非 system 消息，直到总 token 数低于阈值
-        target_tokens = self.max_tokens - self.reserve_tokens
-        kept_non_system = []
+        target_tokens = self.hard_limit
+
         kept_tokens = sum(
-            TokenEstimator.estimate_message(m) 
-            for m in system_msgs
+            TokenEstimator.estimate_message(message)
+            for message in system_msgs
         )
 
-         # 从后往前累积保留（保留最新消息）
-        for msg in reversed(non_system):
-            msg_tokens = TokenEstimator.estimate_message(msg)
-            if kept_tokens + msg_tokens > target_tokens:
-                # 如果加上这条消息会超限，则停止（不保留这条及之前的）
-                break
-            kept_non_system.append(msg)
-            kept_tokens += msg_tokens
-        
-        # 恢复顺序（从旧到新）
-        kept_non_system.reverse()
+        # ========================================================
+        # 2. non-system messages 按 Message Block 划分
+        #
+        # Hard Trim 与 Compression 共用同一个
+        # Tool Calling protocol boundary invariant。
+        # ========================================================
+        blocks = _build_message_blocks(non_system_msgs)
+        kept_blocks: List[List[Dict[str, Any]]] = []
 
-        # 更新内部状态
-        self.messages = system_msgs + kept_non_system
+        # ========================================================
+        # 3. 从最近的 block 开始保留
+        #
+        # 注意：
+        # budget 判断单位是整个 block，
+        # 不再是单条 message。
+        # ========================================================
+        for block in reversed(blocks):
+            block_tokens = sum(
+                TokenEstimator.estimate_message(message)
+                for message in block
+            )
+            if kept_tokens + block_tokens > target_tokens: 
+                break
+
+            kept_blocks.append(block)
+            kept_tokens += block_tokens
+
+        # ========================================================
+        # 4. 恢复原始 block 顺序并 flatten
+        # ========================================================
+        kept_blocks.reverse()
+
+        kept_non_system = _flatten_message_blocks(kept_blocks)
+
+        # ========================================================
+        # 5. 重建 Context，并重新计算真实 token
+        # ========================================================
+        self.messages = (system_msgs+ kept_non_system)
+
         self.recalculate_total_tokens()
         return self.messages.copy()
     
 # ============================================================
-# 3. 上下文管理器（核心调度器）
+# 4. 上下文管理器（核心调度器）
 # ============================================================
 class ContextManager:
     """
@@ -190,13 +362,13 @@ class ContextManager:
         """添加用户消息，自动触发 Token 检查"""
         self.window.add_message("user", content)
         # TODO: 接入 event_bus 记录此事件，应记录操作类型、消息内容长度、当前 token 总数
-        if self.window.is_overflow():
+        if self.window.should_compress():
             self._trigger_async_compression()
 
     def add_assistant_message(self, content: str) -> None:
         self.window.add_message("assistant", content)
         # TODO: 接入 event_bus 记录此事件
-        if self.window.is_overflow():
+        if self.window.should_compress():
             self._trigger_async_compression()
 
     def add_tool_result(self, tool_call_id: str, result: str) -> None:
@@ -208,7 +380,7 @@ class ContextManager:
             }
         )
         # TODO: 接入 event_bus 记录此事件
-        if self.window.is_overflow():
+        if self.window.should_compress():
             self._trigger_async_compression()
 
     def add_system_message(self, content: str) -> None:
@@ -240,7 +412,7 @@ class ContextManager:
                 "tool_calls":tool_calls
             }
         )
-        if self.window.is_overflow():
+        if self.window.should_compress():
             self._trigger_async_compression()
 
     def _is_history_summary(
@@ -266,109 +438,6 @@ class ContextManager:
             and isinstance(content, str)
             and content.startswith("[历史摘要]")
         )
-    
-    def _build_message_blocks(
-        self,
-        messages: List[Dict[str, Any]],
-    ) -> List[List[Dict[str, Any]]]:
-        """
-        将非 system messages 按协议关系组织成不可拆分的 Message Block。
-
-        普通消息：
-            [user]
-            [assistant]
-
-        Tool Calling：
-            [
-                assistant(tool_calls),
-                tool,
-                tool,
-                ...
-            ]
-
-        目的：
-        compression 只能在 block 之间切分，
-        不能把 assistant(tool_calls) 与对应 tool result 拆开。
-
-        注意：
-        本方法只维护已有合法消息的原子性，
-        不负责修复已经损坏的 Context，
-        因此它不是 Protocol Guard。
-        """
-        blocks: List[List[Dict[str, Any]]] = []
-
-        index = 0
-
-        while index < len(messages):
-            message = messages[index]
-
-            # --------------------------------------------------
-            # Tool Calling block:
-            #
-            # assistant(tool_calls)
-            # tool
-            # tool
-            # ...
-            # --------------------------------------------------
-            if (
-                message.get("role") == "assistant"
-                and message.get("tool_calls")
-            ):
-                block = [message]
-
-                tool_call_ids = {
-                    tool_call.get("id")
-                    for tool_call in message.get("tool_calls", [])
-                    if tool_call.get("id") is not None
-                }
-
-                next_index = index + 1
-
-                while next_index < len(messages):
-                    next_message = messages[next_index]
-
-                    if next_message.get("role") != "tool":
-                        break
-
-                    if (
-                        next_message.get("tool_call_id")
-                        not in tool_call_ids
-                    ):
-                        break
-
-                    block.append(next_message)
-                    next_index += 1
-
-                blocks.append(block)
-                index = next_index
-                continue
-
-            # --------------------------------------------------
-            # 普通 message 自己构成一个 block。
-            #
-            # 如果这里出现 orphan tool，
-            # 不在本层偷偷修复或删除：
-            # P0-2 只保证 compression 不制造新的协议破坏。
-            # --------------------------------------------------
-            blocks.append([message])
-            index += 1
-
-        return blocks
-
-
-    def _flatten_message_blocks(
-        self,
-        blocks: List[List[Dict[str, Any]]],
-    ) -> List[Dict[str, Any]]:
-        """
-        将 Message Blocks 恢复成标准 messages 列表。
-        """
-        return [
-            message
-            for block in blocks
-            for message in block
-        ]
-
 
     async def _compress_background(self) -> None:
         """
@@ -472,7 +541,7 @@ class ContextManager:
                 # ==================================================
                 # 3. 非 system messages 构造成 Message Blocks
                 # ==================================================
-                blocks = self._build_message_blocks(non_system_msgs)
+                blocks = _build_message_blocks(non_system_msgs)
 
                 #  保留最近 3 个 Message Block
                 keep_recent_blocks = 3
@@ -490,16 +559,9 @@ class ContextManager:
                 # old history -> summary
                 # recent       -> raw
                 # ==================================================
-                history_to_summarize = (
-                    self._flatten_message_blocks(
-                        history_blocks
-                    )
-                )
-                kept_messages = (
-                    self._flatten_message_blocks(
-                        recent_blocks
-                    )
-                )
+                history_to_summarize = _flatten_message_blocks(history_blocks)
+                kept_messages = _flatten_message_blocks(recent_blocks)
+                
                 if not history_to_summarize:
                     return
 
@@ -553,9 +615,7 @@ class ContextManager:
                         self.event_bus.append(
                             Event(
                                 type=EventType.LLM_REQUEST,
-                                data={
-                                    "action": "llm_summarize"
-                                },
+                                data={"action": "llm_summarize"},
                             )
                         )
                     print(
@@ -572,13 +632,8 @@ class ContextManager:
                             Event(
                                 type=EventType.SUCCESS,
                                 data={
-                                    "action": (
-                                        "llm_summarize"
-                                    ),
-                                    "summary": response.get(
-                                        "content",
-                                        "",
-                                    ),
+                                    "action": ("llm_summarize"),
+                                    "summary": response.get("content","",),
                                 },
                             )
                         )
@@ -670,7 +725,7 @@ class ContextManager:
         return self.window.get_messages_for_llm()
     
 # ============================================================
-# 4. Prompt Builder
+# 5. Prompt Builder
 # ============================================================
 class PromptBuilder:
     """构建系统提示词 + 动态指令"""
