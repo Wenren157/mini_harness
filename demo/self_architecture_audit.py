@@ -122,6 +122,16 @@ def create_readonly_tool_registry(
                 success_list.append(path)
         return result
 
+    async def safe_list_directory(path: str):
+        """列出允许审计范围内的目录。"""
+        if not _is_allowed_path(path):
+            return {
+                "tree": [],
+                "error": f"路径不在允许范围内: {path}",
+            }
+
+        return await list_directory(sandbox, path)
+
     # 注册 read_file
     registry.register(
         name="read_file",
@@ -147,20 +157,19 @@ def create_readonly_tool_registry(
     # 注册 list_directory
     registry.register(
         name="list_directory",
-        description="列出沙箱内的目录结构（递归），返回 JSON 树",
+        description="列出允许审计范围内的目录结构（递归），返回 JSON 树",
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "目录相对路径（相对于 workspace），默认为 '.'",
-                    "default": "."
+                    "description": "目录相对路径（相对于 workspace）"
                 },
             },
+            "required": ["path"],
         },
-        func=lambda path=".": list_directory(sandbox, path)
+        func=safe_list_directory
     )
-
     return registry
 
 
