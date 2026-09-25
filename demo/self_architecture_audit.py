@@ -27,7 +27,7 @@ from mini_harness.core.runtime import HarnessRuntime
 from mini_harness.core.models import EventType, Event
 from mini_harness.infra.real_llm_client import RealLLMClient
 from mini_harness.infra.tools import ToolRegistry, SandboxExecutor
-from mini_harness.infra.context import ContextManager
+from mini_harness.infra.context import ContextManager, TokenEstimator
 from mini_harness.infra.config import RuntimeConfig
 from mini_harness.agents.planner import Planner, PlanStep
 from mini_harness.agents.orchestrator import Orchestrator
@@ -40,48 +40,314 @@ SENSITIVE_PATTERNS = [
     "id_rsa", "id_ecdsa", ".git/config", ".git/HEAD"
 ]
 
+# list_directory 的服务端硬限制。
+# 调用方不可通过 Tool 参数覆盖这些值。
+MAX_DEPTH = 2
+MAX_ENTRIES = 200
+MAX_OUTPUT_TOKENS = 2500
+
+# 审计时不需要进入的高噪声目录。
+NOISE_DIRECTORIES = {
+    ".git",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "venv",
+    "node_modules",
+}
+
 # ============================================================
 # 只读工具定义
 # ============================================================
 
-async def list_directory(sandbox: SandboxExecutor, path: str = ".") -> Dict[str, Any]:
+async def list_directory(
+    sandbox: SandboxExecutor,
+    path: str = ".",
+) -> Dict[str, Any]:
     """
-    列出沙箱内指定目录的树形结构（只读）。
-    返回 JSON 字符串，包含目录和文件信息。
+    列出目录树，并对递归深度、返回节点数和最终输出大小设置硬限制。
+
+    约束：
+    - 请求目录为 depth=0
+    - 最多展开到 MAX_DEPTH
+    - 最多返回 MAX_ENTRIES 个节点
+    - 最终结构化结果不超过 MAX_OUTPUT_TOKENS
+    - symlink 只展示，不跟随
+    - 敏感文件和高噪声目录不进入结果
     """
+
     safe_path = sandbox._safe_path(path)
     if safe_path is None:
-        return {"error": "路径越权或不存在", "tree": []}
+        return {
+            "tree": [],
+            "error": "路径越权或不存在",
+            "truncated": False,
+            "truncation_reasons": [],
+            "stats": {
+                "returned_entries": 0,
+                "max_depth": MAX_DEPTH,
+                "max_entries": MAX_ENTRIES,
+                "max_output_tokens": MAX_OUTPUT_TOKENS,
+            },
+        }
 
-    def _walk_dir(root: str, rel_path: str = ".") -> List[Dict]:
-        items = []
-        full_path = os.path.join(root, rel_path) if rel_path != "." else root
+    normalized_root_path = path.replace("\\", "/").rstrip("/")
+    returned_entries = 0
+    truncation_reasons: List[str] = []
+
+    def add_truncation_reason(reason: str) -> None:
+        if reason not in truncation_reasons:
+            truncation_reasons.append(reason)
+
+    def is_sensitive(rel_path: str, name: str) -> bool:
+        normalized_path = rel_path.replace("\\", "/")
+
+        for pattern in SENSITIVE_PATTERNS:
+            if (
+                fnmatch.fnmatch(normalized_path, pattern)
+                or fnmatch.fnmatch(name, pattern)
+            ):
+                return True
+
+        return False
+
+    def build_result(tree: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return {
+            "tree": tree,
+            "error": None,
+            "truncated": bool(truncation_reasons),
+            "truncation_reasons": list(truncation_reasons),
+            "stats": {
+                "returned_entries": returned_entries,
+                "max_depth": MAX_DEPTH,
+                "max_entries": MAX_ENTRIES,
+                "max_output_tokens": MAX_OUTPUT_TOKENS,
+            },
+        }
+
+    def result_fits_token_budget(tree: List[Dict[str, Any]]) -> bool:
+        result = build_result(tree)
+        return (
+            TokenEstimator.estimate(str(result))
+            <= MAX_OUTPUT_TOKENS
+        )
+
+    def count_entries(entries: List[Dict[str, Any]]) -> int:
+        total = 0
+
+        for entry in entries:
+            total += 1
+            total += count_entries(entry.get("children", []))
+
+        return total
+
+    def sort_key(item):
+        name, full_item = item
+
+        # symlink 必须先判断，避免通过 isdir 跟随链接。
+        if os.path.islink(full_item):
+            kind_order = 1
+        elif os.path.isdir(full_item):
+            kind_order = 0
+        else:
+            kind_order = 1
+
+        return kind_order, name.lower()
+
+    def has_visible_children(full_dir: str, rel_dir: str) -> bool:
+        """
+        判断目录中是否存在至少一个会进入审计结果的直接子节点。
+
+        sensitive/noise 项本来就不会进入结果，
+        因此不能仅因为它们存在就报告 max_depth。
+        """
         try:
-            for name in os.listdir(full_path):
-                full_item = os.path.join(full_path, name)
-                rel_item = os.path.join(rel_path, name) if rel_path != "." else name
-                if os.path.isdir(full_item):
-                    items.append({
-                        "name": name,
-                        "type": "directory",
-                        "children": _walk_dir(root, rel_item)
-                    })
-                else:
+            names = os.listdir(full_dir)
+        except Exception:
+            return False
+
+        for name in names:
+            full_item = os.path.join(full_dir, name)
+            rel_item = f"{rel_dir}/{name}".replace("\\", "/")
+
+            if is_sensitive(rel_item, name):
+                continue
+
+            if (
+                not os.path.islink(full_item)
+                and os.path.isdir(full_item)
+                and name in NOISE_DIRECTORIES
+            ):
+                continue
+
+            return True
+        return False
+
+    def walk_dir(
+        full_dir: str,
+        rel_dir: str,
+        depth: int,
+        output: List[Dict[str, Any]],
+    ) -> None:
+        nonlocal returned_entries
+
+        try:
+            names = os.listdir(full_dir)
+        except Exception as exc:
+            output.append({"error": str(exc)})
+            return
+
+        candidates = [
+            (name, os.path.join(full_dir, name))
+            for name in names
+        ]
+        candidates.sort(key=sort_key)
+
+        for name, full_item in candidates:
+            # Entry Hard Limit：
+            # 在创建任何新的返回节点之前检查。
+            if returned_entries >= MAX_ENTRIES:
+                add_truncation_reason("max_entries")
+                return
+
+            rel_item = (
+                f"{rel_dir}/{name}"
+                if rel_dir
+                else name
+            ).replace("\\", "/")
+
+            # Sensitive Policy 对 file / directory / symlink
+            # 使用完全相同的语义。
+            if is_sensitive(rel_item, name):
+                continue
+
+            is_link = os.path.islink(full_item)
+
+            if is_link:
+                entry: Dict[str, Any] = {
+                    "name": name,
+                    "type": "symlink",
+                    "path": rel_item,
+                }
+
+            elif os.path.isdir(full_item):
+                if name in NOISE_DIRECTORIES:
+                    continue
+
+                entry = {
+                    "name": name,
+                    "type": "directory",
+                    "path": rel_item,
+                }
+
+            else:
+                try:
                     size = os.path.getsize(full_item)
-                    items.append({
-                        "name": name,
-                        "type": "file",
-                        "size": size
-                    })
-        except Exception as e:
-            items.append({"error": str(e)})
-        return items
+                except OSError:
+                    size = 0
+
+                entry = {
+                    "name": name,
+                    "type": "file",
+                    "size": size,
+                    "path": rel_item,
+                }
+
+            # ----------------------------------------------------
+            # 先把当前节点正式加入结果树并占用entry budget。
+            #
+            # 这样如果当前节点是directory，后续递归children时：
+            # 1. parent已经计入MAX_ENTRIES
+            # 2. root_tree已经能看到正在增长的nested subtree
+            # ----------------------------------------------------
+            output.append(entry)
+            returned_entries += 1
+
+            # 当前节点本身就可能使完整structured result超出token预算。
+            if not result_fits_token_budget(root_tree):
+                output.pop()
+                returned_entries -= 1
+                add_truncation_reason("max_output_tokens")
+                return
+
+            # symlink/file没有children，不需要继续递归。
+            if is_link or not os.path.isdir(full_item):
+                continue
+
+            entry_depth = depth + 1
+
+            # 已经到允许返回的最后一层：
+            # 只有存在真正可见的child时才报告depth truncation。
+            if entry_depth >= MAX_DEPTH:
+                if has_visible_children(full_item, rel_item):
+                    add_truncation_reason("max_depth")
+                continue
+
+            children: List[Dict[str, Any]] = []
+            entry["children"] = children
+
+            # 加入空children字段本身也会改变完整tool result大小，
+            # 因此同样必须受token hard limit约束。
+            if not result_fits_token_budget(root_tree):
+                entry.pop("children", None)
+                add_truncation_reason("max_output_tokens")
+                return
+
+            walk_dir(
+                full_item,
+                rel_item,
+                entry_depth,
+                children,
+            )
+
+            # 子递归触发全局entry/token hard limit后，
+            # 立即停止当前层，不再扫描siblings。
+            if (
+                "max_entries" in truncation_reasons
+                or "max_output_tokens" in truncation_reasons
+            ):
+                return
+
+    root_tree: List[Dict[str, Any]] = []
 
     try:
-        tree = _walk_dir(safe_path)
-        return {"tree": tree, "error": None}
-    except Exception as e:
-        return {"error": str(e), "tree": []}
+        walk_dir(
+            safe_path,
+            normalized_root_path,
+            0,
+            root_tree,
+        )
+
+        result = build_result(root_tree)
+
+        # metadata 本身也属于最终tool result预算。
+        # 极端情况下继续移除尾部节点，直到完整结构满足预算。
+        while (
+            result["tree"]
+            and TokenEstimator.estimate(str(result)) > MAX_OUTPUT_TOKENS
+        ):
+            result["tree"].pop()
+            returned_entries = count_entries(root_tree)
+            add_truncation_reason("max_output_tokens")
+            result = build_result(root_tree)
+
+        return result
+
+    except Exception as exc:
+        return {
+            "tree": root_tree,
+            "error": str(exc),
+            "truncated": bool(truncation_reasons),
+            "truncation_reasons": list(truncation_reasons),
+            "stats": {
+                "returned_entries": returned_entries,
+                "max_depth": MAX_DEPTH,
+                "max_entries": MAX_ENTRIES,
+                "max_output_tokens": MAX_OUTPUT_TOKENS,
+            },
+        }
 
 
 def create_readonly_tool_registry(

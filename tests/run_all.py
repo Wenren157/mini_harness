@@ -18,6 +18,9 @@ TEST_GROUPS = {
         "tests/runtime",
         "tests/sandbox",
 
+        # Demo read-only audit tools
+        "tests/demo/test_self_architecture_audit.py",
+
         # Memory
         "tests/integration/test_memory_mock_context.py",
         "tests/integration/test_memory_real_context.py",
