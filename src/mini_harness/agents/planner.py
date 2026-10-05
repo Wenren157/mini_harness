@@ -128,10 +128,18 @@ class Planner:
         # 构建提示词
         prompt = self._build_planning_prompt(goal, capabilities, context)
         # 调用 LLM（假设 LLMClient 提供异步 generate 方法）
-        raw_response = await self.llm_client.generate(prompt)
+        response = await self.llm_client.generate(
+            [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ]
+        )
 
         # 尝试从 LLM 响应中提取步骤列表（JSON 格式）
-        steps_data = self._extract_steps_from_response(raw_response)
+        content = response.get("content", "")
+        steps_data = self._extract_steps_from_response(content)
         if not steps_data:
             # 如果解析失败，回退到规则拆解
             return self._plan_with_rules(goal, capabilities, context)

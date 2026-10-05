@@ -4,7 +4,7 @@ class LLMClient:
     """大模型调用接口（Runtime 依赖契约）"""
     async def generate(
         self, 
-        messages: List[Dict[str, str]], 
+        messages: List[Dict[str, Any]],
         tools: Optional[List[Dict]] = None
     ) -> Dict[str, Any]:
         """

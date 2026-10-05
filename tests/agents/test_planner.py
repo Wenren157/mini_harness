@@ -8,6 +8,35 @@
 import pytest
 from mini_harness.agents.planner import Planner, PlanStep
 
+class RecordingLLM:
+    """记录 Planner 调用参数，并返回符合 LLMClient 契约的响应。"""
+
+    def __init__(self):
+        self.calls = []
+
+    async def generate(self, messages, tools=None):
+        self.calls.append(
+            {
+                "messages": messages,
+                "tools": tools,
+            }
+        )
+        return {
+            "content": (
+                '[{"step_id": 1, '
+                '"description": "读取并分析目标源码", '
+                '"depends_on": []}]'
+            ),
+            "tool_calls": [],
+        }
+
+
+class FailingLLM:
+    """模拟 LLM 调用异常，用于验证规则回退。"""
+
+    async def generate(self, messages, tools=None):
+        raise RuntimeError("planned test failure")
+
 
 class TestPlanner:
     @pytest.mark.asyncio
@@ -38,6 +67,53 @@ class TestPlanner:
         steps = await planner.plan("列出所有文件")
         assert len(steps) == 1
         assert steps[0].description == "列出所有文件"
+
+    @pytest.mark.asyncio
+    async def test_llm_plan_uses_message_contract_and_response_content(self):
+        """Planner 应以消息列表调用 LLM，并解析响应中的 content。"""
+        llm = RecordingLLM()
+        planner = Planner(llm_client=llm)
+
+        steps = await planner.plan(
+            goal="审计项目结构",
+            available_capabilities=["只读源码"],
+            context="允许根：src/mini_harness、demo",
+        )
+
+        assert len(llm.calls) == 1
+
+        call = llm.calls[0]
+        assert call["tools"] is None
+        assert isinstance(call["messages"], list)
+        assert len(call["messages"]) == 1
+
+        message = call["messages"][0]
+        assert message["role"] == "user"
+        assert "审计项目结构" in message["content"]
+        assert "只读源码" in message["content"]
+        assert "src/mini_harness" in message["content"]
+        assert "demo" in message["content"]
+
+        assert len(steps) == 1
+        assert steps[0].step_id == 1
+        assert steps[0].description == "读取并分析目标源码"
+        assert steps[0].depends_on == []
+
+    @pytest.mark.asyncio
+    async def test_llm_failure_falls_back_without_debug_output(self, capsys):
+        """LLM 异常时应回退到规则规划，且不打印临时调试信息。"""
+        planner = Planner(llm_client=FailingLLM())
+
+        steps = await planner.plan("分析 runtime.py 的结构")
+
+        captured = capsys.readouterr()
+
+        assert len(steps) == 3
+        assert steps[0].step_id == 1
+        assert steps[1].depends_on == [1]
+        assert steps[2].depends_on == [2]
+        assert captured.out == ""
+        assert captured.err == ""
 
     def test_planstep_is_intent_not_tool_call(self):
         """PlanStep 只包含自然语言描述，不包含工具名称"""
