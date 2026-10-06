@@ -39,8 +39,10 @@ async def test_integration(tmp_path):
     # 注意：MockLLMClient 的 mode="multi" 返回的是 add/multiply，并不存在，会触发重试和错误
     # 为了测试超时，我们临时修改 MockLLMClient 的行为，或者直接使用自定义的 generate
     # 最干净的方式：给 MockLLMClient 加一个 set_response 方法，或者直接覆写
-    async def custom_generate(messages):
+    async def custom_generate(messages, tools=None):
         # 第一次调用返回 tool_calls（触发工具执行），第二次返回最终答案（结束循环）
+        assert tools is not None
+
         if len(messages) <= 2:  # 简单判断是否为第一轮
             return {
                 "content": None,
@@ -58,6 +60,11 @@ async def test_integration(tmp_path):
 
     # 运行（这里会自动调用 _step，完全模拟真实场景）
     result = await runtime.run("请帮我处理这些文件。")
+
+    assert result["final_answer"] == "任务完成，但有些工具出错了。"
+    assert "unexpected keyword argument 'tools'" not in str(
+        runtime.state.error_info
+    )
 
     # 添加下面这一行，看看工具到底返回了什么
     print("\n" + "=" * 60)

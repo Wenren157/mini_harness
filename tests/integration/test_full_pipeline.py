@@ -5,8 +5,15 @@ from mini_harness.infra.tools import SandboxExecutor, ToolRegistry
 from mini_harness.infra.llm_client import OpenAILLMClient  # 或 Mock
 
 class MockLLMClient:
-    async def generate(self, messages):
-        return {"content": "Mock response"}
+    async def generate(
+        self,
+        messages,
+        tools=None,
+    ):
+        return {
+            "content": "Mock response",
+            "tool_calls": [],
+        }
 
 @pytest.mark.asyncio
 async def test_compression_and_trace():
@@ -41,7 +48,11 @@ async def test_compression_and_trace():
 
     # 发送多条消息，使 token 超限
     for i in range(15):
-        await runtime.run(f"Message {i} with content to fill tokens " * 20)
+        result = await runtime.run(
+            f"Message {i} with content to fill tokens " * 20
+        )
+
+        assert result["final_answer"] == "Mock response"
 
     # 等待后台压缩完成
     await asyncio.sleep(1)
