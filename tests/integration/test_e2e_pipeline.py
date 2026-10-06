@@ -8,8 +8,7 @@ from mini_harness.core.runtime import (
     RuntimeConfig
 )
 from mini_harness.infra.tools import (
-    ToolRegistry,
-    SandboxExecutor
+    create_default_tools,
 )
 from mini_harness.core.models import EventType
 
@@ -55,7 +54,7 @@ class E2EMockLLM:
         }
 
 @pytest.mark.asyncio
-async def test_e2e_runtime_tool_context_trace():
+async def test_e2e_runtime_tool_context_trace(tmp_path):
 
     """
     End-to-End Pipeline:
@@ -77,16 +76,22 @@ async def test_e2e_runtime_tool_context_trace():
     # ============================
 
     config = RuntimeConfig(
-        # 降低阈值，方便触发压缩
-        max_context_tokens=500,
+        # 使用合法的 Soft/Hard Threshold 区间触发压缩
+        max_context_tokens=2500,
         max_iterations=5,
-        event_bus_maxlen=100,
+        event_bus_maxlen=200,
         tool_timeout=3.0
     )
     llm = E2EMockLLM()
-    sandbox = SandboxExecutor()
-    tools = ToolRegistry(
-        sandbox=sandbox
+
+    test_file = tmp_path / "a.txt"
+    test_file.write_text(
+        "hello from e2e test",
+        encoding="utf-8",
+    )
+
+    tools = create_default_tools(
+        workspace=str(tmp_path)
     )
     runtime = HarnessRuntime(
         config=config,
@@ -134,6 +139,21 @@ async def test_e2e_runtime_tool_context_trace():
         EventType.TOOL_CALL_RESULT
         in event_types
     ), "没有Tool Result事件"
+
+    tool_result_events = [
+        event
+        for event in tool_events
+        if event.type == EventType.TOOL_CALL_RESULT
+    ]
+
+    assert len(tool_result_events) == 1
+
+    tool_result = tool_result_events[0].data
+
+    assert tool_result["name"] == "read_file"
+    assert "hello from e2e test" in str(tool_result["result"])
+    assert "未注册" not in str(tool_result["result"])
+    assert "KeyError" not in str(tool_result["result"])
 
     # ============================
     # 5. 验证 Compression事件
