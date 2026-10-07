@@ -1,6 +1,7 @@
 import sys
 import json
 import asyncio
+import logging
 import os
 from typing import Dict, Any, Optional
 
@@ -11,6 +12,8 @@ from .protocol import (
 )
 from mini_harness.infra.tools import create_default_tools
 import mini_harness.infra.tools as tools
+
+logger = logging.getLogger(__name__)
 
 
 class MCPServer:
@@ -58,14 +61,15 @@ class MCPServer:
 
     async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
 
-        print(
-            "SERVER REQUEST:",
-            request,
-            file=sys.stderr
-        )
         req_id = request.get("id")
         method = request.get("method")
         params = request.get("params", {})
+
+        logger.debug(
+            "MCP request received: request_id=%s method=%s",
+            req_id,
+            method,
+        )
 
         if method == "initialize":
             return make_success_response(req_id, {"protocolVersion": "2024-11-05"})
@@ -81,11 +85,14 @@ class MCPServer:
     async def _handle_tool_call(self, req_id: Optional[int], tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         try:
 
-            print(
-                "SERVER TOOL CALL:",
+            logger.debug(
+                (
+                    "MCP tool call received: "
+                    "request_id=%s tool_name=%s argument_keys=%s"
+                ),
+                req_id,
                 tool_name,
-                arguments,
-                file=sys.stderr
+                sorted(arguments.keys()),
             )
             if tool_name == "read_file":
                 result = await self.registry.execute_with_retry(
@@ -136,8 +143,9 @@ class MCPServer:
             return make_error_response(req_id, MCPErrorCode.TOOL_EXECUTION_FAILED, str(e))
 
     async def run_stdio(self):
-        sys.stderr.write("MCP Server started, waiting for requests...\n")
-        sys.stderr.flush()
+        logger.info(
+            "MCP Server started and waiting for requests"
+        )
         loop = asyncio.get_running_loop()
         while True:
             line = await loop.run_in_executor(None, sys.stdin.readline)

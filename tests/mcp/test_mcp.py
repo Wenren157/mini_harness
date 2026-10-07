@@ -1,11 +1,147 @@
 import asyncio
+import json
+import logging
 import os
 import sys
 import tempfile
+
 import pytest
 import pytest_asyncio
 
 from mini_harness.mcp.client import MCPClient
+from mini_harness.mcp.server import MCPServer
+
+
+class FakeMCPStdin:
+    """记录 Client 写入的 JSON-RPC 请求。"""
+
+    def __init__(self):
+        self.data = b""
+
+    def write(self, data):
+        self.data += data
+
+    async def drain(self):
+        return None
+
+
+class FakeMCPStdout:
+    """向 Client 返回一条预设 JSON-RPC 响应。"""
+
+    def __init__(self, response):
+        self.response_line = (
+            json.dumps(response).encode("utf-8")
+            + b"\n"
+        )
+
+    async def readline(self):
+        response_line = self.response_line
+        self.response_line = b""
+        return response_line
+
+
+class FakeMCPStderr:
+    async def read(self):
+        return b""
+
+
+class FakeMCPProcess:
+    def __init__(self, response):
+        self.stdin = FakeMCPStdin()
+        self.stdout = FakeMCPStdout(response)
+        self.stderr = FakeMCPStderr()
+
+
+@pytest.mark.asyncio
+async def test_client_logs_metadata_without_exposing_payload(
+    capsys,
+    caplog,
+):
+    """Client 应记录调用元数据，但不输出或记录工具结果。"""
+    sensitive_path = "private/source.py"
+    sensitive_content = "SECRET_SOURCE_CONTENT"
+
+    process = FakeMCPProcess(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": sensitive_content,
+            },
+        }
+    )
+    client = MCPClient(process)
+
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="mini_harness.mcp.client",
+    ):
+        result = await client.call_tool(
+            "read_file",
+            {
+                "path": sensitive_path,
+            },
+        )
+
+    captured = capsys.readouterr()
+
+    assert result == sensitive_content
+
+    assert captured.out == ""
+    assert captured.err == ""
+
+    assert "tools/call" in caplog.text
+    assert "read_file" in caplog.text
+
+    assert sensitive_path not in caplog.text
+    assert sensitive_content not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_server_logs_metadata_without_exposing_arguments(
+    tmp_path,
+    capsys,
+    caplog,
+):
+    """Server 应记录方法和工具名，但不记录参数值。"""
+    sensitive_content = "SECRET_WRITE_CONTENT"
+
+    server = MCPServer(
+        workspace=str(tmp_path)
+    )
+
+    request = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {
+            "name": "write_file",
+            "arguments": {
+                "path": "output.txt",
+                "content": sensitive_content,
+            },
+        },
+    }
+
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="mini_harness.mcp.server",
+    ):
+        response = await server.handle_request(request)
+
+    captured = capsys.readouterr()
+
+    assert "result" in response
+    assert response["result"]["content"] == "success"
+
+    assert captured.out == ""
+    assert captured.err == ""
+
+    assert "tools/call" in caplog.text
+    assert "write_file" in caplog.text
+
+    assert sensitive_content not in caplog.text
+
 
 # 确保项目 src 目录在 PYTHONPATH 中（子进程需要）
 # 在测试 fixture 中动态设置

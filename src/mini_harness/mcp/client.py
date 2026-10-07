@@ -1,8 +1,11 @@
 import asyncio
 import json
+import logging
 import os
 import sys
 from typing import Dict, Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class MCPClient:
@@ -66,11 +69,17 @@ class MCPClient:
             await self.process.stdin.drain()
             # 读取 stdout（一行一个响应）
             response_line = await self.process.stdout.readline()
-            print(
-                "RAW MCP STDOUT:",
-                repr(response_line),
-                file=sys.stderr
+
+            logger.debug(
+                (
+                    "MCP response received: "
+                    "request_id=%s method=%s response_bytes=%s"
+                ),
+                self._request_id,
+                method,
+                len(response_line),
             )
+
             if not response_line:
                 # 尝试读取 stderr 获取错误信息
                 stderr_data = await self.process.stderr.read()
@@ -85,15 +94,36 @@ class MCPClient:
         response = await self._send_request("tools/list", {})
         return response.get("result", {}).get("tools", [])
 
-    async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        response = await self._send_request(
-            "tools/call", 
-            {
-                "name": name, 
-                "arguments": arguments
-            }
+    async def call_tool(
+        self,
+        name: str,
+        arguments: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        logger.debug(
+            (
+                "MCP tool call requested: "
+                "tool_name=%s argument_keys=%s"
+            ),
+            name,
+            sorted(arguments.keys()),
         )
-        print("DEBUG MCP RESPONSE:", response)
+
+        response = await self._send_request(
+            "tools/call",
+            {
+                "name": name,
+                "arguments": arguments,
+            },
+        )
+
+        logger.debug(
+            (
+                "MCP tool call completed: "
+                "tool_name=%s has_error=%s"
+            ),
+            name,
+            "error" in response,
+        )
 
         if "error" in response:
             raise RuntimeError(
