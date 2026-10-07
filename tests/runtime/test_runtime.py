@@ -1,5 +1,6 @@
 import sys
 import os
+import logging
 import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -84,6 +85,59 @@ async def main():
         "Just tell me the answer", 
         "Direct text response"
     )
+
+
+class FailingLLM:
+    """用于验证 Runtime 异常诊断行为。"""
+
+    async def generate(self, messages, tools=None):
+        raise RuntimeError("planned runtime failure")
+
+
+@pytest.mark.asyncio
+async def test_runtime_logs_step_failure_without_printing(
+    tmp_path,
+    capsys,
+    caplog,
+):
+    """Runtime 异常应进入日志和 EventBus，而不是直接打印。"""
+    sandbox = SandboxExecutor(
+        workspace_root=str(tmp_path)
+    )
+    registry = ToolRegistry(
+        sandbox=sandbox
+    )
+    config = RuntimeConfig(
+        max_iterations=1
+    )
+    runtime = HarnessRuntime(
+        config=config,
+        llm_client=FailingLLM(),
+        tool_registry=registry,
+    )
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="mini_harness.core.runtime",
+    ):
+        result = await runtime.run(
+            "trigger planned failure"
+        )
+
+    captured = capsys.readouterr()
+
+    assert captured.out == ""
+    assert captured.err == ""
+
+    assert "Runtime step failed" in caplog.text
+    assert "planned runtime failure" in caplog.text
+
+    assert result["status"].value == "error"
+    assert any(
+        event.type == EventType.ERROR
+        for event in result["events"]
+    )
+
 
 # ========== 新增：独立测试函数 ==========
 @pytest.mark.asyncio

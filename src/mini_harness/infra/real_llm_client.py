@@ -12,6 +12,7 @@ from mini_harness.core.interfaces import LLMClient
 
 logger = logging.getLogger(__name__)
 
+
 class RealLLMClient(LLMClient):
     def __init__(
         self,
@@ -49,32 +50,15 @@ class RealLLMClient(LLMClient):
             "messages": messages,
         }
 
-        # 调试打印：
-        print(
-            "\n========== DEBUG LLM REQUEST ==========",
-            flush=True
-        )
-
-        print(
-            "TOOLS:",
-            tools,
-            flush=True
-        )
-
-        print(
-            "MESSAGES:",
-            json.dumps(
-                messages,
-                indent=2,
-                ensure_ascii=False,
-                default=str
+        # 只记录结构元数据，不记录请求原文。
+        logger.debug(
+            (
+                "LLM request started: "
+                "model=%s message_count=%s tool_count=%s"
             ),
-            flush=True
-        )
-
-        print(
-            "=======================================\n",
-            flush=True
+            self.model,
+            len(messages),
+            len(tools) if tools else 0,
         )
 
         if tools:
@@ -84,49 +68,28 @@ class RealLLMClient(LLMClient):
             response = await self.client.chat.completions.create(
                 **kwargs
             )
-        except Exception as e:
-            print(
-                "\n========== DEBUG LLM ERROR ==========",
-                flush=True
+        except Exception:
+            logger.exception(
+                "LLM request failed: model=%s",
+                self.model,
             )
-
-            print(
-                type(e).__name__,
-                str(e),
-                flush=True
-            )
-
-            print(
-                "=====================================\n",
-                flush=True
-            )
-
             raise
+
         choice = response.choices[0]
         message = choice.message
 
-        # 调试打印
-        print(
-            "\n========== DEBUG LLM RESPONSE ==========",
-            flush=True
+        logger.debug(
+            (
+                "LLM response received: "
+                "model=%s finish_reason=%s "
+                "has_content=%s tool_call_count=%s"
+            ),
+            self.model,
+            choice.finish_reason,
+            message.content is not None,
+            len(message.tool_calls or []),
         )
 
-        print(
-            "CONTENT:",
-            message.content,
-            flush=True
-        )
-
-        print(
-            "TOOL_CALLS:",
-            message.tool_calls,
-            flush=True
-        )
-
-        print(
-            "========================================\n",
-            flush=True
-        )
         result = {
             "content": message.content,
             "tool_calls": [],

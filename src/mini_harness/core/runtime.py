@@ -13,6 +13,9 @@ import random
 import json
 import os, json, time
 import sys
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ---------- Harness Runtime 主类 ----------
@@ -146,16 +149,21 @@ class HarnessRuntime:
         await self._mcp_client.initialize()
         self._mcp_started = True
 
-        # 后台任务读取 stderr（便于调试）
+        # 后台读取 MCP Server stderr，并交给日志系统。
         async def read_stderr():
             while True:
                 line = await process.stderr.readline()
                 if not line:
                     break
-                print(
-                    f"[MCP Server] {line.decode().strip()}",
-                    file=sys.stderr
+
+                logger.debug(
+                    "MCP server stderr: %s",
+                    line.decode(
+                        "utf-8",
+                        errors="replace",
+                    ).strip(),
                 )
+
         asyncio.create_task(read_stderr())
 
 
@@ -431,21 +439,8 @@ class HarnessRuntime:
                 return False
 
         except Exception as e:
-            #调试打印：
-            print(
-                "========== RUNTIME STEP ERROR ==========",
-                flush=True
-            )
-
-            print(
-                type(e).__name__,
-                str(e),
-                flush=True
-            )
-
-            print(
-                "========================================",
-                flush=True
+            logger.exception(
+                "Runtime step failed"
             )
             self.state.error_info = f"Step failed: {str(e)}"
             self.state.status = AgentStatus.ERROR
