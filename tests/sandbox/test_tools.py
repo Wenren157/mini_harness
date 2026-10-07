@@ -2,12 +2,43 @@ import os
 import sys
 import asyncio
 import time
-from mini_harness.infra.tools import create_default_tools
+import pytest
+
+from mini_harness.infra.tools import (
+    SandboxExecutor,
+    create_default_tools,
+)
 
 
 # =============== 新增兼容windows和Linux双系统测试 =========================
 def is_windows():
     return sys.platform == "win32"
+
+
+@pytest.mark.asyncio
+async def test_write_file_does_not_emit_debug_output(
+    tmp_path,
+    capsys,
+):
+    """write_file 不应向 stdout/stderr 泄露临时路径调试信息。"""
+    sandbox = SandboxExecutor(
+        workspace_root=str(tmp_path)
+    )
+
+    result = await sandbox.write_file(
+        path="output.txt",
+        content="hello",
+    )
+
+    captured = capsys.readouterr()
+
+    assert result["success"] is True
+    assert (tmp_path / "output.txt").read_text(
+        encoding="utf-8"
+    ) == "hello"
+
+    assert "DEBUG write_file:" not in captured.out
+    assert "DEBUG write_file:" not in captured.err
 
 
 async def demo():

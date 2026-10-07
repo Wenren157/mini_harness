@@ -219,18 +219,7 @@ class HarnessRuntime:
                     "data": e.data,
                     "trace_id": e.trace_id
                 })
-            print(
-                "========== DEBUG EVENTS BEFORE JSON =========="
-            )
 
-            for e in events_serializable:
-                print(
-                    e
-                )
-
-            print(
-                "=============================================="
-            )
             json.dump(events_serializable, f, indent=2, ensure_ascii=False)
 
         return {

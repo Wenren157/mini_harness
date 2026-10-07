@@ -54,7 +54,7 @@ class E2EMockLLM:
         }
 
 @pytest.mark.asyncio
-async def test_e2e_runtime_tool_context_trace(tmp_path):
+async def test_e2e_runtime_tool_context_trace(tmp_path, capsys):
 
     """
     End-to-End Pipeline:
@@ -206,7 +206,29 @@ async def test_e2e_runtime_tool_context_trace(tmp_path):
     ), "缺少compression done事件"
 
     # ============================
-    # 6. 最终打印
+    # 6. 验证临时调试输出已清理
+    # ============================
+    captured = capsys.readouterr()
+
+    forbidden_debug_markers = [
+        "DEBUG EVENTS BEFORE JSON",
+        "DEBUG compress background START",
+        "DEBUG compression messages:",
+        "DEBUG compression response:",
+        "DEBUG compress DONE",
+        "DEBUG compression FINALLY",
+    ]
+
+    for marker in forbidden_debug_markers:
+        assert marker not in captured.out, (
+            f"stdout 泄露临时调试输出: {marker}"
+        )
+        assert marker not in captured.err, (
+            f"stderr 泄露临时调试输出: {marker}"
+        )
+
+    # ============================
+    # 7. 最终打印
     # ============================
     print("\n===== E2E Pipeline Success =====")
     print(

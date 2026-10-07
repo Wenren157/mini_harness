@@ -462,7 +462,6 @@ class ContextManager:
         4. old summary 被 new summary 替换，不累积。
         """
 
-        print("DEBUG compress background START")
         async with self._compression_lock:
             # 防止短时间内多次触发
             if self._compression_triggered:
@@ -618,15 +617,9 @@ class ContextManager:
                                 data={"action": "llm_summarize"},
                             )
                         )
-                    print(
-                        "DEBUG compression messages:",
-                        summary_messages,
-                    )
+
                     response = await self.llm.generate(summary_messages)
-                    print(
-                        "DEBUG compression response:",
-                        response,
-                    )
+
                     if self.event_bus is not None:
                         self.event_bus.append(
                             Event(
@@ -700,7 +693,6 @@ class ContextManager:
                 self.window.messages = new_messages
                 self.window.recalculate_total_tokens()
                 if self.event_bus is not None:
-                    print("DEBUG compress DONE")
                     self.event_bus.append(
                         Event(
                             type=EventType.SUCCESS,
@@ -713,7 +705,6 @@ class ContextManager:
                         )
                     )
             finally:
-                print("DEBUG compression FINALLY")
                 self._compression_triggered = False
 
     def get_context_for_llm(self) -> List[Dict[str, str]]:

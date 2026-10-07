@@ -144,14 +144,6 @@ class SandboxExecutor:
         """
         safe_path = self._safe_path(path)
 
-        print(
-            "DEBUG write_file:",
-            self.workspace_root,
-            path,
-            safe_path,
-            file=sys.stderr
-        )
-
         if safe_path is None:
             return {"success": False, "bytes_written": 0, "error": "路径越权"}
         
