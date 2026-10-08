@@ -1,267 +1,283 @@
-# Mini Harness
+# Agent Harness｜轻量级工具型 Agent 执行框架
 
-**一个最小但完整的 AI Agent Runtime 内核实现**  
-从零构建，覆盖单 Agent 与 Multi-Agent 模式，支持工具调用、上下文管理、长期记忆、MCP 协议、沙箱隔离与全链路可观测性。
+> Repository: `mini_harness`
+>
+> 一个面向 Agent Runtime / Agent Infra 学习、验证与面试展示的个人工程项目。
 
----
+Mini Harness 从零实现了一个可运行的轻量级 Agent Harness：模型通过 ReAct 风格循环调用工具，运行时维护上下文和事件，MCP 适配层通过 stdio JSON-RPC 调用工具，多 Agent 层负责规划、执行和结果聚合。
 
-## 项目定位
+项目重点不是封装业务工作流，而是验证 Agent 执行框架中的几个基础问题：工具调用协议如何闭环、上下文如何在预算内保持协议完整、工具边界如何限制、执行过程如何留下可追踪证据，以及多 Agent 编排如何与 Runtime 解耦。
 
-Mini Harness 是一个用于学习和验证 Agent 系统核心原理的**最小实现**。它模拟了生产级 Agent Harness 的基础架构，但刻意保持轻量、可读、可测试，适合作为面试作品、教学案例或底层框架原型。
+## 当前状态
 
-**核心公式**：`Model + Harness = Agent`  
-**目标岗位**：Agent Harness / Infra 研发工程师
+本项目处于持续稳定化阶段，不是生产级商业系统。
 
----
+已完成并具有代码或测试证据的能力：
 
-## 功能特性
+- 异步 Agent Loop：`LLM → tool_calls → tool result → LLM` 多轮执行。
+- Tool Registry 与 Sandbox：工具注册、并发调用、超时、重试和工作区路径约束。
+- Context Manager：完整消息 Token 计数、软/硬预算边界、异步摘要压缩和 Tool Calling Block 原子性保护。
+- MCP：基于 stdio JSON-RPC 的 `initialize`、`tools/list`、`tools/call` 最小链路。
+- Memory：LRU 长期记忆、JSON 持久化及上下文注入。
+- Multi-Agent：Planner、Executor、Orchestrator、AgentScope 与 MessageBus。
+- Event / Trace：记录模型请求、模型响应、工具调用、错误与完成事件，并导出 JSON Trace。
+- 只读架构审计工具：文件读取白名单、目录遍历预算及结构化截断信息。
 
-- **ReAct Agent Loop**：异步状态机驱动，支持 LLM → 工具调用 → 结果回写 → 循环，直至最终回答。
-- **工具系统**：ToolRegistry + SandboxExecutor，支持并发执行、超时重试、指数退避、死循环防御。
-- **上下文管理**：滑动窗口裁剪、异步后台压缩（LLM 摘要）、Token 估算。
-- **长期记忆**：LRU 淘汰 + JSON 持久化，支持手动 consolidate。
-- **MCP 协议**：stdio JSON-RPC 通信，支持 initialize / tools/list / tools/call，工具能力标准化与进程级隔离。
-- **Multi-Agent**：Planner + Executor + Orchestrator 三层隔离，AgentScope 资源隔离，MessageBus 通信。
-- **可观测性**：EventBus（deque）记录全链路事件，自动导出 Trace JSON，支持执行时间线与统计摘要。
-- **安全沙箱**：路径越权防护、敏感文件拦截、文件大小限制、只读模式。
-- **真机 LLM 验证**：支持 DeepSeek/OpenAI API，完整端到端测试。
-- **自我架构审计 Demo**：Agent 自主分析自身源码，生成架构审计报告（Day7 收官展示）。
+最近完成的安全边界修复：
 
----
+- `e4f3454`：`read_file` 与 `list_directory` 统一应用审计白名单，越界路径在文件系统遍历前拒绝。
+- `93ddc18`：目录遍历增加服务端硬限制：`MAX_DEPTH=2`、`MAX_ENTRIES=200`、`MAX_OUTPUT_TOKENS=2500`，并返回 `truncated`、`truncation_reasons` 和 `stats`。
 
-## 技术栈
+最近完成的执行链路修复：
 
-- **Python 3.10+**，asyncio 异步编程
-- **pytest** 测试框架
-- **OpenAI SDK**（兼容 DeepSeek API）
-- **JSON-RPC 2.0** over stdio
-- **tiktoken**（Token 估算，可选）
-- **PyO3 / Rust**（规划中，用于高性能 Token 计数与 JSON 编解码）
+- E2E Compression 场景已补齐有效工具注册与上下文压力构造，Trace 可同时观察到 `compress_start` 和 `compress_done`。
+- `6e7e4a8`：自我架构审计 Demo 将允许根统一注入 Tool Schema、Planner Context 和能力描述；真实 DeepSeek 运行能够主动扫描 `src/mini_harness` 与 `demo`，并读取核心源码作为审计证据。
+- Runtime、LLM Client 与 MCP Client/Server 的临时 `print` 调试输出已替换为分级日志；这些组件的诊断日志只记录调用元数据，不记录提示词、工具参数值或模型响应原文。
 
----
+当前已知限制：
 
-## 目录结构
+- 真实 DeepSeek 长链路运行中仍可能出现 Tool Calling 协议不完整：一次 `assistant(tool_calls)` 后没有为全部 `tool_call_id` 保留对应的 `tool` 消息。该问题已与审计范围可发现性问题分离，后续将按独立缺陷处理。
+- 当前审计报告由模型归纳生成，报告结论仍需结合 Trace 与源码证据人工复核；“脚本退出成功”不等同于“报告结论全部准确”。
 
+## 架构概览
+
+```mermaid
+flowchart TD
+    U[User Goal] --> P[Planner]
+    P --> O[Orchestrator]
+    O --> E[Executor]
+    E --> R[Harness Runtime]
+    R --> L[LLM Client]
+    R --> C[Context Manager]
+    R --> T[Tool Registry]
+    T --> S[Sandbox Executor]
+    R --> M[MCP Client]
+    M --> MS[MCP Server]
+    R --> V[Event Bus / Trace]
 ```
+
+### 核心执行链
+
+1. Runtime 将用户消息加入 Context。
+2. LLM 返回最终文本或结构化 `tool_calls`。
+3. Runtime 通过 Tool Registry 或 MCP 执行工具。
+4. `assistant(tool_calls)` 与对应 `tool` 消息按协议写回 Context。
+5. Runtime 继续下一轮，直至完成、报错或达到迭代上限。
+6. EventBus 记录执行事实，Trace 导出运行时间线。
+
+## 关键设计
+
+### 1. Tool Calling 协议完整性
+
+Context 将一次工具交互组织为不可拆分的 Message Block：
+
+```text
+assistant(tool_calls)
+├── tool(tool_call_id=A)
+└── tool(tool_call_id=B)
+```
+
+压缩和裁剪只允许在 Block 边界操作，避免出现孤立的 `tool` 消息。该机制维护已有合法消息的原子性，但不负责修复已经损坏的上下文，因此不等同于 Protocol Guard。
+
+### 2. 上下文预算
+
+- 使用完整消息序列化结果估算 Token，覆盖 `content`、`tool_calls`、`tool_call_id` 和工具参数。
+- Soft Limit 用于提前触发异步压缩。
+- Hard Limit 用于阻止上下文继续无界增长。
+- 压缩完成后重新计算 Token，避免计数与实际消息状态漂移。
+
+通用 Tool Output Budget、Oversized Atomic Block 和压缩并发协调仍在后续设计范围内。
+
+### 3. 只读审计边界
+
+自我架构审计 Demo 仅注册 `read_file` 和 `list_directory`：
+
+- 允许根：`src/mini_harness`、`demo`。
+- 拒绝根目录 `.` 及白名单以外路径。
+- 解析真实路径后进行范围判断，阻止路径穿越和前缀碰撞。
+- 过滤敏感路径与常见噪声目录。
+- 目录遍历同时受深度、节点数和输出 Token 预算约束。
+- 达到限制时返回结构化截断原因，不静默丢弃结果。
+
+允许根由单一配置源声明，并同时用于安全校验与模型侧能力发现：
+
+```text
+ALLOWED_AUDIT_ROOTS
+├── Tool Schema：向模型说明合法的 workspace 相对路径
+├── Planner Context：为规划阶段提供审计范围
+├── Available Capabilities：说明只读工具及完整路径约束
+└── Runtime Enforcement：在目录遍历和文件读取前执行白名单校验
+```
+
+这使 Agent 无需放宽白名单即可发现合法扫描入口。定向测试覆盖 Schema 暴露、默认配置来源、Planner 上下文、能力描述、完整目标路径、越界拒绝和真实源码读取链路。
+
+### 4. Multi-Agent 边界
+
+Planner 负责将目标拆解为步骤，Executor 继续调用既有 `Runtime.run()`，Orchestrator 聚合结果。Multi-Agent 层不向 Runtime 添加新的执行入口。
+
+当前实现提供基础的 Workspace、Context、Memory 与 AgentScope 隔离验证；Step Context 生命周期和共享 Evidence Store 仍属于后续演进项。
+
+## 项目结构
+
+```text
 mini_harness/
 ├── src/mini_harness/
-│   ├── core/                  # 核心调度层
-│   │   ├── runtime.py         # HarnessRuntime（Agent Loop + 状态机）
-│   │   ├── models.py          # 事件类型、Agent 状态模型
-│   │   └── interfaces.py      # LLMClient 抽象接口
-│   ├── agents/                # Multi-Agent 编排层
-│   │   ├── planner.py         # Planner（任务拆解）
-│   │   ├── executor.py        # Executor（顺序执行步骤）
-│   │   ├── orchestrator.py    # Orchestrator（Plan→Execute→Aggregate）
-│   │   ├── scope.py           # AgentScope（资源隔离）
-│   │   └── message_bus.py     # MessageBus（Agent 通信）
-│   ├── infra/                 # 基础设施层
-│   │   ├── tools.py           # ToolRegistry + SandboxExecutor
-│   │   ├── context.py         # ContextManager（滑动窗口 + 压缩）
-│   │   ├── memory.py          # LongTermMemory（LRU + 持久化）
-│   │   ├── llm_client.py      # OpenAI 兼容 LLM 客户端
-│   │   ├── real_llm_client.py # 真实 LLM 客户端（Function Calling）
-│   │   └── config.py          # RuntimeConfig 配置
-│   ├── mcp/                   # MCP 协议层
-│   │   ├── server.py          # MCP Server（子进程）
-│   │   ├── client.py          # MCP Client（stdio JSON-RPC）
-│   │   └── protocol.py        # JSON-RPC 消息协议
-│   └── __init__.py
+│   ├── core/
+│   │   ├── runtime.py          # Agent Loop、状态与事件
+│   │   ├── models.py           # Event、AgentState、AgentStatus
+│   │   └── interfaces.py       # LLMClient 抽象
+│   ├── infra/
+│   │   ├── context.py          # Context、预算、压缩与协议 Block
+│   │   ├── tools.py            # Tool Registry 与 Sandbox
+│   │   ├── memory.py           # 长期记忆
+│   │   ├── real_llm_client.py  # DeepSeek OpenAI-compatible Adapter
+│   │   └── config.py           # Runtime 配置
+│   ├── mcp/
+│   │   ├── client.py           # stdio MCP Client
+│   │   ├── server.py           # MCP Server
+│   │   └── protocol.py         # JSON-RPC 消息
+│   └── agents/
+│       ├── planner.py
+│       ├── executor.py
+│       ├── orchestrator.py
+│       ├── scope.py
+│       └── message_bus.py
 ├── demo/
-│   └── self_architecture_audit.py   # Day7 自我架构审计 Demo
-├── tests/                     # 单元、集成、端到端、真机测试
-├── traces/                    # 运行时自动生成的 Trace 文件
-├── workspace/                 # 沙箱工作目录
+│   └── self_architecture_audit.py
+├── tests/
+│   ├── runtime/
+│   ├── context/
+│   ├── sandbox/
+│   ├── mcp/
+│   ├── agents/
+│   ├── integration/
+│   └── demo/
 ├── pyproject.toml
 └── README.md
 ```
 
----
+## 环境与安装
 
-## 快速开始
+当前验证环境：
 
-### 1. 环境准备
+- Python 3.10
+- `openai==2.50.0`
+- `aiofiles==25.1.0`
+- `tiktoken==0.13.0`
+- `pytest==9.1.1`
+- `pytest-asyncio==1.4.0`
 
-```bash
-# 克隆仓库
-git clone <your-repo-url>
+```powershell
+git clone git@github.com:Wenren157/mini_harness.git
 cd mini_harness
 
-# 创建虚拟环境
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1
 
-# 安装依赖
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install openai==2.50.0 aiofiles==25.1.0 tiktoken==0.13.0 pytest==9.1.1 pytest-asyncio==1.4.0
+python -m pip install -e .
 ```
 
-### 2. 配置 LLM API Key
+> 当前 `pyproject.toml` 尚未完整声明运行时依赖，因此安装命令显式列出了已验证版本。后续会将运行依赖与测试依赖拆分到项目元数据中。
 
-本机运行需要 DeepSeek 或 OpenAI 兼容的 API Key。在项目根目录创建 `.env` 文件：
+## 配置 DeepSeek
 
-```
-DEEPSEEK_API_KEY=sk-xxx
-```
+`RealLLMClient` 从进程环境读取 `DEEPSEEK_API_KEY`。当前项目不会自动加载 `.env`。
 
-或设置环境变量：
+PowerShell：
 
-```bash
-export DEEPSEEK_API_KEY=sk-xxx
+```powershell
+$env:DEEPSEEK_API_KEY="your-deepseek-api-key"
 ```
 
-### 3. 运行测试
+只验证变量是否存在，不打印密钥：
 
-```bash
-# 运行全部测试（smoke + regression + e2e）
-python tests/run_all.py all
-
-# 仅运行回归测试
-python tests/run_all.py regression
-
-# 运行真机 LLM 测试（需要 API Key）
-pytest tests/real_llm/ -v
+```powershell
+if ($env:DEEPSEEK_API_KEY) { "DEEPSEEK_API_KEY is set" } else { "DEEPSEEK_API_KEY is missing" }
 ```
 
-### 4. 运行自我架构审计 Demo
+## 运行测试
 
-```bash
-python demo/self_architecture_audit.py
+Windows 重定向测试日志时，建议显式向子进程传递 UTF-8 环境，避免 emoji 或中文输出触发 GBK 编码错误。
+
+```powershell
+cmd /d /c "set PYTHONUTF8=1&& set PYTHONIOENCODING=utf-8&& python tests\run_all.py smoke"
+cmd /d /c "set PYTHONUTF8=1&& set PYTHONIOENCODING=utf-8&& python tests\run_all.py regression"
+cmd /d /c "set PYTHONUTF8=1&& set PYTHONIOENCODING=utf-8&& python tests\run_all.py e2e"
 ```
 
-该 Demo 将启动一个只读审计 Agent，自动读取 `src/mini_harness` 下的核心源码，执行任务拆解、工具调用，最终生成 `architecture_audit_report.md` 审计报告，并导出 Trace 文件到 `traces/` 目录。
+2026-10-08 本地验证结果：
 
----
+| 分组 | 结果 | 说明 |
+| --- | --- | --- |
+| Smoke | 12 passed | Runtime、MCP、日志脱敏与 Runtime Integration 基础链路通过 |
+| Regression | 62 passed, 3 skipped, 2 warnings | 3 个 skip 为 Windows symlink 场景；warnings 为 Windows asyncio transport teardown |
+| E2E | 10 passed | Tool、Context Compression、Trace 与 Multi-Agent 集成链路通过 |
 
-## 使用示例
+定向目录安全测试已验证白名单、路径穿越、前缀碰撞、深度限制、节点预算、Token 预算、截断元数据及符号链接策略。D14 定向测试进一步验证允许根在 Tool Schema、Planner Context 和能力描述中的可发现性，以及 `HarnessRuntime → ToolRegistry → SandboxExecutor` 的真实源码读取证据链路。
 
-### 单 Agent 运行（代码片段）
+## 运行自我架构审计 Demo
 
-```python
-import asyncio
-from mini_harness.core.runtime import HarnessRuntime
-from mini_harness.infra.real_llm_client import RealLLMClient
-from mini_harness.infra.tools import ToolRegistry, SandboxExecutor
-from mini_harness.infra.context import ContextManager
-from mini_harness.infra.config import RuntimeConfig
-
-async def main():
-    # 初始化组件
-    llm = RealLLMClient()
-    sandbox = SandboxExecutor("workspace")
-    tools = ToolRegistry(sandbox)
-    tools.register_default_tools()
-    
-    context = ContextManager(llm_client=llm, max_tokens=8000)
-    config = RuntimeConfig(workspace="workspace", max_iterations=10)
-    
-    runtime = HarnessRuntime(
-        config=config,
-        llm_client=llm,
-        tool_registry=tools,
-        context_manager=context,
-    )
-    
-    result = await runtime.run("创建一个 hello.txt 文件，内容为 Hello")
-    print(result["final_answer"])
-
-asyncio.run(main())
+```powershell
+cmd /d /c "set PYTHONUTF8=1&& set PYTHONIOENCODING=utf-8&& python demo\self_architecture_audit.py > audit.log 2>&1"
 ```
 
-### Multi-Agent 运行
+运行会生成：
 
-```python
-from mini_harness.agents.planner import Planner
-from mini_harness.agents.orchestrator import Orchestrator
+- `audit.log`：Demo 控制台输出与诊断日志；
+- `traces/trace_*.json`：完整事件 Trace；
+- `architecture_audit_report.md`：审计报告。
 
-planner = Planner(llm_client=llm)
-orchestrator = Orchestrator(runtime=runtime, planner=planner)
-result = await orchestrator.run_goal("分析项目结构并生成报告")
+2026-10-08 真实 DeepSeek 验证中，Agent 已主动调用：
+
+```text
+list_directory({"path": "src/mini_harness"})
+list_directory({"path": "demo"})
+read_file({"path": "src/mini_harness/core/runtime.py"})
 ```
 
----
+随后继续读取 Context、Tools、MCP Client/Server、Planner、Orchestrator 与 AgentScope 等白名单内源码。工具结果包含真实文件内容，证明允许审计范围已经从策略配置传递到模型规划与工具执行链路。
 
-## 架构设计决策
+本次真实验收聚焦“允许范围可发现并能够取得源码证据”，不将报告生成或脚本正常退出等同于全链路零错误。长链路运行仍暴露出 Tool Calling 消息配对不完整问题，详见“当前已知限制”和 Roadmap。
 
-### 为什么 Runtime 不直接调用工具？
+## 测试状态与能力边界
 
-所有工具调用通过 MCP 协议或 ToolRegistry 统一管理，保证上下文记录、事件追踪、错误处理的一致性，避免执行路径分散。
+以下概念在本项目中严格区分：
 
-### 为什么 Planner 和 Executor 分离？
+- **Implemented**：存在代码实现。
+- **Unit/Regression Verified**：由 Mock 或本地测试验证。
+- **Real-LLM Verified**：通过真实 DeepSeek API 验证完整链路。
+- **Production Ready**：不适用于当前项目。
 
-Planner 只输出抽象步骤，Executor 负责驱动 Runtime 执行，两者解耦，可独立替换策略（例如用 LLM 规划或规则规划）。
+当前 README 不将单元测试通过表述为生产验证，也不将“脚本正常退出”表述为“审计任务成功”。
 
-### 为什么 Orchestrator 不污染 Runtime？
+## Roadmap
 
-Runtime 核心循环保持稳定，Multi-Agent 编排逻辑通过 Orchestrator 注入，未来扩展（如 DAG 调度、消息队列）不会影响基础执行。
+- [x] 让 Planner、Tool Schema 与能力描述共享允许审计根，并通过真实 DeepSeek 验证源码读取链路。
+- [x] 修复 E2E Compression 测试构造，验证 `compress_start` 与 `compress_done` 生命周期。
+- [ ] 保证每个 `assistant(tool_calls)` 都有完整的 `tool_call_id → tool message` 配对，覆盖多工具调用、迭代耗尽和上下文处理路径。
+- [ ] 区分步骤成功、迭代耗尽与 Runtime ERROR，避免错误结果被展示为“步骤完成”。
+- [ ] 为审计报告建立文件路径、代码位置与 Trace Evidence 的结构化引用，降低无证据结论和错误归纳。
+- [ ] 建立通用 Tool Output Budget。
+- [ ] 定义 Oversized Atomic Block 的处理策略，禁止静默生成空 Context。
+- [ ] 协调 Soft Compression 与 Hard Trim 的并发和提交时序。
+- [ ] 增加 fatal/recoverable 错误传播与计划熔断。
+- [ ] 消除共享 EventBus 的累计重放，并统一 Trace 导出 Owner。
+- [ ] 区分完整 Trace Payload 与 Console 摘要，增加截断与脱敏策略。
+- [ ] 在真实 E2E 稳定后拆分 Demo 入口、只读工具和审计编排职责。
+- [ ] 完整声明运行依赖与测试依赖。
 
-### 为什么砍掉向量检索和自动 consolidation？
+## 项目定位
 
-项目定位为最小实现，ContextManager 已承担短期上下文管理，长期记忆只需 LRU + 持久化即可验证核心链路。语义检索和自动压缩作为 `# TODO` 扩展点保留。
+这是一个个人实现的 Agent Runtime / Agent Infra 工程项目，用于验证基础机制和沉淀可复现的工程证据。它没有生产用户规模、商业 SLA 或生产集群数据，也不以这些能力自居。
 
----
+项目适合用于讨论：
 
-## 测试覆盖
-
-| 测试分组 | 覆盖范围 | 命令 |
-|---------|---------|------|
-| smoke | Runtime、MCP 基础链路 | `python tests/run_all.py smoke` |
-| regression | 上下文、内存、沙箱、多 Agent 单元测试 | `python tests/run_all.py regression` |
-| e2e | 完整链路、工具调用、多 Agent 集成 | `python tests/run_all.py e2e` |
-| real_llm | 真实 LLM 端到端（需 API Key） | `pytest tests/real_llm/ -v` |
-
-当前所有测试均通过（ALL TESTS PASSED）。
-
----
-
-## 可观测性
-
-每次运行自动生成 Trace JSON 文件（位于 `traces/`），包含：
-
-- 用户输入
-- LLM 请求/响应
-- 工具调用请求/结果
-- 错误事件
-- 完成状态
-- 时间戳与统计信息
-
-可通过 Trace 文件进行执行回放和排障分析。
-
----
-
-## 安全与约束
-
-- 敏感文件黑名单：禁止读取 `.env`, `*.key`, `*.pem` 等。
-- 路径白名单：仅允许访问 `src/mini_harness` 和 `demo` 目录（Demo 中可配置）。
-- 沙箱路径防护：防止目录穿越（`../`）。
-- 文件大小限制：默认 1MB 读取上限。
-- 只读模式：Demo 中不包含写工具，确保审计过程不修改任何文件。
-
----
-
-## 未来扩展（TODO）
-
-- [ ] 高性能 Token 计数器（Rust/PyO3）
-- [ ] JSON-RPC 序列化加速（Rust serde）
-- [ ] 子进程资源限制（cgroup/rlimit）
-- [ ] 向量检索与语义记忆
-- [ ] DAG 调度与 Agent 间消息队列
-- [ ] 指标监控与告警（Prometheus）
-- [ ] 优雅退出与状态持久化
-
----
-
-## 贡献
-
-欢迎提 Issue 和 PR。本项目为个人学习与面试展示项目，但任何改进建议都值得讨论。
-
----
-
-## 许可证
-
-MIT License
-
----
-
-**作者**：闻人 
-**GitHub**：<https://github.com/Wenren157>  
-**求职意向**：Agent Harness / Infra 研发工程师（DeepSeek Code Harness）
+- Tool Calling 协议与上下文完整性；
+- Agent Runtime 的状态、错误与循环控制；
+- Tool/Sandbox 安全边界；
+- Context Budget 与异步压缩；
+- MCP 进程通信；
+- Multi-Agent 资源隔离；
+- Event、Trace 与可复现性。
