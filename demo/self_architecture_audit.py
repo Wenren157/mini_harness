@@ -46,6 +46,12 @@ MAX_DEPTH = 2
 MAX_ENTRIES = 200
 MAX_OUTPUT_TOKENS = 2500
 
+# Self Architecture Audit 唯一允许读取的源码根目录。
+ALLOWED_AUDIT_ROOTS = (
+    "src/mini_harness",
+    "demo",
+)
+
 # 审计时不需要进入的高噪声目录。
 NOISE_DIRECTORIES = {
     ".git",
@@ -359,16 +365,36 @@ def create_readonly_tool_registry(
     sandbox = SandboxExecutor(workspace_root=workspace)
     registry = ToolRegistry(sandbox)
 
+    effective_allowed_prefixes = (
+        allowed_prefixes
+        if allowed_prefixes is not None
+        else ALLOWED_AUDIT_ROOTS
+    )
+
+    normalized_allowed_prefixes = [
+        prefix.replace("\\", "/").rstrip("/")
+        for prefix in effective_allowed_prefixes
+    ]
+
+    allowed_roots_text = (
+        "、".join(normalized_allowed_prefixes)
+        if normalized_allowed_prefixes
+        else "整个 workspace"
+    )
+
+
     def _is_allowed_path(path: str) -> bool:
-        if not allowed_prefixes:
+        if not normalized_allowed_prefixes:
             return True
         abs_path = os.path.abspath(os.path.join(workspace, path))
         if not abs_path.startswith(os.path.abspath(workspace)):
             return False
         rel_path = os.path.relpath(abs_path, workspace).replace('\\', '/')
-        for prefix in allowed_prefixes:
-            prefix = prefix.replace('\\', '/')
-            if rel_path == prefix or rel_path.startswith(prefix + '/'):
+        for prefix in normalized_allowed_prefixes:
+            if (
+                rel_path == prefix
+                or rel_path.startswith(prefix + "/")
+            ):
                 return True
         return False
 
@@ -401,13 +427,19 @@ def create_readonly_tool_registry(
     # 注册 read_file
     registry.register(
         name="read_file",
-        description="读取沙箱内的文件（最大 1MB）",
+        description=(
+            "读取允许审计范围内的文件（最大 1 MB）。"
+            f"允许审计根：{allowed_roots_text}。"
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "文件相对路径（相对于 workspace）"
+                    "description": (
+                        "文件相对路径（相对于 workspace）；"
+                        f"路径必须位于：{allowed_roots_text}"
+                    )
                 },
                 "timeout": {
                     "type": "number",
@@ -423,13 +455,20 @@ def create_readonly_tool_registry(
     # 注册 list_directory
     registry.register(
         name="list_directory",
-        description="列出允许审计范围内的目录结构（递归），返回 JSON 树",
+        description=(
+            "列出允许审计范围内的目录结构（递归），"
+            "返回 JSON 树。"
+            f"允许审计根：{allowed_roots_text}。"
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "目录相对路径（相对于 workspace）"
+                    "description": (
+                        "目录相对路径（相对于 workspace）；"
+                        f"路径必须从以下允许根开始：{allowed_roots_text}"
+                    )
                 },
             },
             "required": ["path"],
@@ -467,7 +506,16 @@ class VerboseOrchestrator(Orchestrator):
 
         # 1. 调用 Planner 生成计划
         print("\n🧠 [Planner] 正在拆解目标为可执行步骤...")
-        context_msg = """
+
+        allowed_roots_text = "\n".join(
+            f"            - {root}"
+            for root in ALLOWED_AUDIT_ROOTS
+        )
+        allowed_roots_inline = "、".join(
+            ALLOWED_AUDIT_ROOTS
+        )
+
+        context_msg = f"""
             【角色】你是一位拥有10年经验的分布式系统架构师，专精于 Agent Runtime 和 AI Infra。
             【项目背景】Mini Harness 是一个用于面试展示的最小 Agent Runtime，从 Day1 到 Day7 逐步实现：
             - Day1-4：Runtime、Tool Calling、Context、EventBus、Trace、Memory。
@@ -475,6 +523,13 @@ class VerboseOrchestrator(Orchestrator):
             - Day6：实现 Multi-Agent（Planner + Executor + Orchestrator + AgentScope + MessageBus）。
             - 项目定位是“最小实现”，因此一些复杂特性（向量检索、DAG 调度、分布式存储）被刻意省略，用 # TODO 标记。
             请基于以上背景，评估当前实现的合理性，指出哪些省略是合理的，哪些遗漏是风险。
+            【允许审计范围】
+            本次任务是只读源码审计，只允许访问以下 workspace 相对路径：
+{allowed_roots_text}
+
+            所有目录枚举和文件读取都必须从上述允许根开始。
+            不要尝试访问 workspace 根目录 "."、"src" 或其他未授权路径。
+            工具参数必须使用完整的 workspace 相对路径。
 
             【审计任务拆解】请将审计任务拆解为以下子任务，每个子任务必须包含明确的检查点：
             1. 核心 Runtime 审计：
@@ -505,16 +560,33 @@ class VerboseOrchestrator(Orchestrator):
             - 可观测性还缺什么（如指标监控、告警、分布式追踪）？
 
             【工具使用限制】优先读取以下核心文件，并关注关键函数：
-            - core/runtime.py：Agent Loop、状态机、工具调用、死循环防御
-            - infra/tools.py：SandboxExecutor 的路径防护、超时、文件大小限制
-            - infra/context.py：滑动窗口、异步压缩、并发锁
-            - mcp/client.py & server.py：子进程管理、JSON-RPC 通信
-            - agents/orchestrator.py：聚合逻辑、报告生成
+            - src/mini_harness/core/runtime.py：Agent Loop、状态机、工具调用、死循环防御
+            - src/mini_harness/infra/tools.py：SandboxExecutor 的路径防护、超时、文件大小限制
+            - src/mini_harness/infra/context.py：滑动窗口、异步压缩、并发锁
+            - src/mini_harness/mcp/client.py：MCP Client、JSON-RPC 请求及子进程通信
+            - src/mini_harness/mcp/server.py：MCP Server、请求分发及工具调用
+            - src/mini_harness/agents/orchestrator.py：聚合逻辑、报告生成
             对于每个核心文件，至少提出一个可改进点。
         """
+
+        available_capabilities = [
+            (
+                "只读文件工具 read_file："
+                "读取允许审计根内的源码文件。"
+            ),
+            (
+                "只读目录工具 list_directory："
+                "枚举允许审计根内的目录结构。"
+            ),
+            (
+                f"允许审计根：{allowed_roots_inline}；"
+                "所有工具参数必须使用完整的 workspace 相对路径。"
+            ),
+        ]
+
         steps: List[PlanStep] = await self.planner.plan(
             goal=goal,
-            available_capabilities=[],
+            available_capabilities=available_capabilities,
             context=context_msg
         )
         print(f"\n✅ [Planner] 生成 {len(steps)} 个步骤：")
@@ -705,7 +777,7 @@ async def main():
     workspace = str(project_root)
 
     # 1. 构建只读工具注册表
-    allowed_scan_paths = ["src/mini_harness", "demo"]
+    allowed_scan_paths = list(ALLOWED_AUDIT_ROOTS)
     successful_reads = []   # 收集成功读取的文件
     tool_registry = create_readonly_tool_registry(
         workspace,

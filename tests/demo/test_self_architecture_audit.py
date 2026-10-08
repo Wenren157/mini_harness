@@ -1,4 +1,6 @@
 """Tests for the read-only tools used by the architecture-audit demo."""
+
+import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable
@@ -74,6 +76,343 @@ def test_readonly_tool_schema_requires_explicit_path(audit_workspace: Path):
     assert "write_file" not in schemas
     assert "execute_command" not in schemas
     assert schemas["list_directory"]["parameters"]["required"] == ["path"]
+
+
+def test_readonly_tool_schema_advertises_allowed_audit_roots(
+    audit_workspace: Path,
+):
+    """T1测试: 两个只读工具都必须向模型暴露准确的允许审计根。"""
+    allowed_roots = (
+        "src/mini_harness",
+        "demo",
+    )
+
+    registry = audit.create_readonly_tool_registry(
+        str(audit_workspace),
+        allowed_prefixes=list(allowed_roots),
+    )
+
+    schemas = {
+        item["function"]["name"]: item["function"]
+        for item in registry.get_schema()
+    }
+
+    for tool_name in (
+        "read_file",
+        "list_directory",
+    ):
+        schema_text = json.dumps(
+            schemas[tool_name],
+            ensure_ascii=False,
+        )
+
+        for root in allowed_roots:
+            assert root in schema_text, (
+                f"{tool_name} schema 未暴露允许审计根: {root}"
+            )
+
+
+@pytest.mark.asyncio
+async def test_readonly_registry_defaults_to_declared_audit_roots(
+    audit_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """T2测试: 默认工具注册表必须使用统一声明的审计根，而不是开放整个 workspace。"""
+
+    assert hasattr(audit, "ALLOWED_AUDIT_ROOTS"), (
+        "Demo 尚未声明统一的 ALLOWED_AUDIT_ROOTS"
+    )
+
+    monkeypatch.setattr(
+        audit,
+        "ALLOWED_AUDIT_ROOTS",
+        (
+            "src",
+            "demo",
+        ),
+    )
+
+    registry = audit.create_readonly_tool_registry(
+        str(audit_workspace)
+    )
+
+    schemas = {
+        item["function"]["name"]: item["function"]
+        for item in registry.get_schema()
+    }
+
+    schema_text = json.dumps(
+        schemas,
+        ensure_ascii=False,
+    )
+
+    assert "src" in schema_text
+    assert "demo" in schema_text
+    assert "整个 workspace" not in schema_text
+
+    allowed_result = await registry.execute_with_retry(
+        "read_file",
+        path="src/package/module.py",
+    )
+    denied_result = await registry.execute_with_retry(
+        "read_file",
+        path="private/secret.txt",
+    )
+
+    assert allowed_result["error"] is None
+    assert denied_result["error"]
+    assert "不在允许范围内" in denied_result["error"]
+
+
+async def _capture_verbose_orchestrator_planner_call():
+    """运行无执行步骤的 Orchestrator，并返回传给 Planner 的参数。"""
+
+    class RecordingPlanner:
+        def __init__(self):
+            self.calls = []
+
+        async def plan(
+            self,
+            goal,
+            available_capabilities=None,
+            context=None,
+        ):
+            self.calls.append(
+                {
+                    "goal": goal,
+                    "available_capabilities": available_capabilities,
+                    "context": context,
+                }
+            )
+            return []
+
+    class SummaryLLM:
+        async def generate(self, messages, tools=None):
+            return {
+                "content": "test summary",
+                "tool_calls": [],
+            }
+
+    class RuntimeStub:
+        def __init__(self):
+            self.event_bus = []
+            self.llm = SummaryLLM()
+
+    planner = RecordingPlanner()
+    orchestrator = audit.VerboseOrchestrator(
+        runtime=RuntimeStub(),
+        planner=planner,
+    )
+    await orchestrator.run_goal(
+        "执行只读架构审计"
+    )
+    assert len(planner.calls) == 1
+
+    return planner.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_verbose_orchestrator_passes_allowed_roots_to_planner_context():
+    """T3测试: Planner 的审计上下文必须明确包含全部允许审计根。"""
+    planner_call = await _capture_verbose_orchestrator_planner_call()
+
+    planner_context = planner_call["context"]
+
+    assert isinstance(planner_context, str)
+
+    for root in audit.ALLOWED_AUDIT_ROOTS:
+        assert root in planner_context, (
+            f"Planner context 未暴露允许审计根: {root}"
+        )
+
+@pytest.mark.asyncio
+async def test_verbose_orchestrator_advertises_readonly_capabilities():
+    """T4测试: Planner 能力描述必须包含只读工具和允许审计根。"""
+    planner_call = await _capture_verbose_orchestrator_planner_call()
+
+    available_capabilities = planner_call[
+        "available_capabilities"
+    ]
+
+    assert isinstance(available_capabilities, list)
+    assert available_capabilities, (
+        "Planner available_capabilities 仍为空"
+    )
+
+    capability_text = json.dumps(
+        available_capabilities,
+        ensure_ascii=False,
+    )
+
+    assert "只读" in capability_text
+    assert "read_file" in capability_text
+    assert "list_directory" in capability_text
+
+    for root in audit.ALLOWED_AUDIT_ROOTS:
+        assert root in capability_text, (
+            f"Planner capabilities 未暴露允许审计根: {root}"
+        )
+
+@pytest.mark.asyncio
+async def test_planner_context_uses_full_workspace_relative_source_paths():
+    """T5测试: 核心源码目标必须使用可直接传给工具的完整相对路径。"""
+    planner_call = await _capture_verbose_orchestrator_planner_call()
+
+    planner_context = planner_call["context"]
+
+    expected_source_paths = (
+        "src/mini_harness/core/runtime.py",
+        "src/mini_harness/infra/tools.py",
+        "src/mini_harness/infra/context.py",
+        "src/mini_harness/mcp/client.py",
+        "src/mini_harness/mcp/server.py",
+        "src/mini_harness/agents/orchestrator.py",
+    )
+
+    for source_path in expected_source_paths:
+        assert source_path in planner_context, (
+            f"Planner context 缺少完整源码路径: {source_path}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_audit_pipeline_reads_real_source_evidence(
+    tmp_path: Path,
+):
+    """T7测试: 完整审计链路必须读取真实源码并将证据回传给 LLM。"""
+    workspace = tmp_path / "workspace"
+    target_path = "src/mini_harness/core/runtime.py"
+    source_marker = "REAL_SOURCE_EVIDENCE_MARKER"
+
+    target_file = workspace / target_path
+    target_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    target_file.write_text(
+        f"{source_marker} = True\n",
+        encoding="utf-8",
+    )
+
+    class SingleFilePlanner:
+        async def plan(
+            self,
+            goal,
+            available_capabilities=None,
+            context=None,
+        ):
+            assert target_path in context
+            assert available_capabilities
+
+            return [
+                audit.PlanStep(
+                    step_id=1,
+                    description=(
+                        "使用 read_file 读取并分析 "
+                        f"{target_path}"
+                    ),
+                )
+            ]
+
+    class EvidenceLLM:
+        def __init__(self):
+            self.calls = []
+
+        async def generate(
+            self,
+            messages,
+            tools=None,
+        ):
+            self.calls.append(
+                {
+                    "messages": messages,
+                    "tools": tools,
+                }
+            )
+
+            if len(self.calls) == 1:
+                return {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_read_runtime",
+                            "name": "read_file",
+                            "arguments": {
+                                "path": target_path,
+                            },
+                        }
+                    ],
+                }
+
+            if len(self.calls) == 2:
+                return {
+                    "content": "已基于真实源码完成分析",
+                    "tool_calls": [],
+                }
+
+            return {
+                "content": "最终审计摘要",
+                "tool_calls": [],
+            }
+
+    successful_reads = []
+
+    registry = audit.create_readonly_tool_registry(
+        workspace=str(workspace),
+        success_list=successful_reads,
+    )
+
+    llm = EvidenceLLM()
+
+    runtime = audit.HarnessRuntime(
+        config=audit.RuntimeConfig(
+            max_context_tokens=20000,
+            max_iterations=3,
+            event_bus_maxlen=100,
+            tool_timeout=3.0,
+        ),
+        llm_client=llm,
+        tool_registry=registry,
+    )
+
+    orchestrator = audit.VerboseOrchestrator(
+        runtime=runtime,
+        planner=SingleFilePlanner(),
+        success_reads=successful_reads,
+    )
+
+    result = await orchestrator.run_goal(
+        "读取核心 Runtime 源码并执行只读架构审计"
+    )
+
+    assert successful_reads == [
+        target_path
+    ]
+
+    assert result["results"][1]["final_answer"] == (
+        "已基于真实源码完成分析"
+    )
+
+    assert len(llm.calls) == 3
+
+    second_request_text = json.dumps(
+        llm.calls[1]["messages"],
+        ensure_ascii=False,
+        default=str,
+    )
+
+    assert source_marker in second_request_text
+
+    tool_result_events = [
+        event
+        for event in runtime.event_bus
+        if event.type == audit.EventType.TOOL_CALL_RESULT
+    ]
+
+    assert len(tool_result_events) == 1
+    assert source_marker in str(
+        tool_result_events[0].data
+    )
 
 
 @pytest.mark.asyncio
